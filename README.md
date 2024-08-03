@@ -5,18 +5,23 @@ Tired of spending hours setting up evaluation pipelines? OpenPrefEval lets you b
 ```python
 from open_pref_eval import evaluate, load_model
 
-model = load_model("your_model_path")
-results = evaluate(model, datasets=["HelpSteer2", "trufullqa", "toxic"])
+results = evaluate(model_name="gpt2", datasets=["unalignment/toxic-dpo-v0.2"])
 print(results)
 ```
 
 Output:
 
-| adapter | val_HelpSteer2 | OOD_trufullqa | OOD_toxic |
-| :------ | -------------: | ------------: | --------: |
-| base    |           0.33 |          0.53 |      0.77 |
-| ReprPO  |           0.53 |          0.58 |      0.65 |
-| DPO     |           0.68 |          0.73 |      0.45 |
+
+| dataset            |   correct |   prob |   n | model   |
+|:-------------------|----------:|-------:|----:|:--------|
+| help_steer2-dpo    |      0.39 |  0.486 | 200 | gpt2    |
+| toxic-dpo-v0.2     |      1    |  0.715 | 200 | gpt2    |
+| truthful_qa_binary |      0.52 |  0.505 | 200 | gpt2    |
+
+
+![](docs/img/2024-08-03-15-50-51.png)
+
+See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
 
 ## Why OpenPreferenceEval?
 

@@ -3,6 +3,7 @@ from datasets import Dataset, features
 import tempfile
 from trl import DPOConfig, DPOTrainer
 from typing import Optional
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 dummy_dataset_dict = {
     "prompt": [
@@ -46,16 +47,19 @@ class OPEConfig(DPOConfig):
     loss_type: str = 'ipo'
     max_length: int = 512
     max_prompt_length: int = 128
-    remove_unused_columns=False
+    disable_tqdm=True,
     output_dir: Optional[str] = field(
         default=None,
         metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
+    )
+    remove_unused_columns: Optional[bool] = field(
+        default=False, metadata={"help": "Remove columns not required by the model when using an nlp.Dataset."}
     )
 
 class OPETrainer(DPOTrainer):
     pass
 
-def get_dummy_trainer(model, tokenizer, per_device_eval_batch_size=None, **kwargs):
+def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None, per_device_eval_batch_size=8, **kwargs):
     """
     Make a dummy trainer, 
 
@@ -70,6 +74,15 @@ def get_dummy_trainer(model, tokenizer, per_device_eval_batch_size=None, **kwarg
             per_device_eval_batch_size=per_device_eval_batch_size,
             **kwargs
         )
+
+    if model_name is not None:
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+    if model is None:
+        raise ValueError('model or model_name must be provided')
 
     # we rse a TRL class
     trainer = OPETrainer(
