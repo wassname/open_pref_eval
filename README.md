@@ -53,6 +53,6 @@ The advantages of this approach are many:
 ## Status: WIP
 
 - [x] example notebook
-- [ ] test
-- [ ] add more datasets (math, ethics, etc)
+- [x] test
 - [x] make [radar chart](https://matplotlib.org/stable/gallery/specialty_plots/radar_chart.html)
+- [ ] add more datasets (math, ethics, etc)
