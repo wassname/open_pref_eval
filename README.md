@@ -3,7 +3,7 @@
 Tired of spending hours setting up evaluation pipelines? OpenPrefEval lets you benchmark your LLM in 3 lines of code.
 
 ```python
-from openpreferenceeval import evaluate, load_model
+from open_pref_eval import evaluate, load_model
 
 model = load_model("your_model_path")
 results = evaluate(model, datasets=["HelpSteer2", "trufullqa", "toxic"])
