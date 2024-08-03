@@ -47,7 +47,8 @@ class OPEConfig(DPOConfig):
     loss_type: str = 'ipo'
     max_length: int = 512
     max_prompt_length: int = 128
-    disable_tqdm=True,
+    disable_tqdm=True
+    should_save=False
     output_dir: Optional[str] = field(
         default=None,
         metadata={"help": "The output directory where the model predictions and checkpoints will be written."},

@@ -33,12 +33,8 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
 
     data = []
     # use hf dpo trainer to tokenizer, and make loader
-    dataset = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10)
-    eval_dataloader = trainer.get_eval_dataloader(dataset)
-    # eval_dataloader = DataLoader(dataset, shuffle=False, drop_last=False, batch_size=trainer.args.eval_batch_size, collate_fn=trainer.data_collator)
-
-    # model = trainer._wrap_model(trainer.model, training=False, dataloader=eval_dataloader)
-    # model = trainer.accelerator.prepare_model(model, evaluation_mode=True)
+    dataset2 = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10)
+    eval_dataloader = trainer.get_eval_dataloader(dataset2)
 
     assert trainer.loss_type == 'ipo', 'only ipo is supported, since it gives us the avg of logps, and is not biased by response length'
     
@@ -58,8 +54,6 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
             # Note: if we are using ipo or reprpo this will be adjusted for length, but otherwise not which would bias the results
             logratio = chosen_logps-rejected_logps
 
-            batch['chosen_input_ids'].shape
-            batch['rejected_input_ids'].shape
             bs = batch['chosen_input_ids'].shape[0]
             i = bs * step + torch.arange(bs)
             data.append(dict(

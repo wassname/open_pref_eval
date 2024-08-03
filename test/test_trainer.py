@@ -3,6 +3,7 @@ import unittest
 
 import pytest
 import torch
+from parameterized import parameterized
 from datasets import Dataset, features
 from transformers import (
     AutoModelForCausalLM,
@@ -12,9 +13,9 @@ from transformers import (
     AutoTokenizer,
 )
 
-from trl import DPOConfig, DPOTrainer
 
-from open_pref_eval.trainer import get_dummy_trainer, dummy_dataset
+
+from open_pref_eval.trainer import get_dummy_trainer, dummy_dataset, OPEConfig, OPETrainer
 from open_pref_eval.evaluation import evaluate, eval_dpo_dataset
 
 
@@ -40,9 +41,15 @@ class DPOTrainerTester(unittest.TestCase):
         cls.idefics2_ref_model = AutoModelForVision2Seq.from_pretrained(model_id)
         cls.idefics2_processor = AutoProcessor.from_pretrained(model_id)
 
-def test_dpo_trainer(self, name, loss_type, pre_compute):
+    @parameterized.expand(
+        [
+            ["gpt2"],
+            # ["t5"], # TODO make it work for encoder_decoder
+        ]
+    )
+    def test_dpo_trainer(self, name):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = DPOConfig(
+            training_args = OPEConfig(
                 output_dir=tmp_dir,
                 per_device_eval_batch_size=2,
             )
@@ -56,9 +63,8 @@ def test_dpo_trainer(self, name, loss_type, pre_compute):
                 ref_model = self.t5_ref_model
                 tokenizer = self.t5_tokenizer
 
-            trainer = DPOTrainer(
+            trainer = OPETrainer(
                 model=model,
-                ref_model=ref_model,
                 args=training_args,
                 tokenizer=tokenizer,
                 train_dataset=dummy_dataset,
@@ -68,3 +74,6 @@ def test_dpo_trainer(self, name, loss_type, pre_compute):
             df = evaluate(trainer=trainer, datasets=[dummy_dataset])
 
             assert len(df)>0
+
+if __name__ == '__main__':
+    unittest.main()
