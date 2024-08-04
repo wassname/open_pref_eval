@@ -2,6 +2,10 @@
 
 Tired of spending hours setting up evaluation pipelines? OpenPrefEval lets you benchmark your LLM in 3 lines of code.
 
+~~~bash
+pip install git+https://github.com/wassname/open_pref_eval.git
+~~~
+
 ```python
 from open_pref_eval import evaluate, load_model
 
