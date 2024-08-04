@@ -8,11 +8,11 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-transformers = "^4.43.3"
+transformers = "^4.43.2"
 datasets = "^2.20.0"
-trl = "^0.9.6"
+trl = "^0.9.4"
 pandas = "^2.2.2"
-torch = "^2.4.0"
+torch = "^2.3.0"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.5"
