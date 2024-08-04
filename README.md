@@ -30,15 +30,15 @@ See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
 ## Why OpenPreferenceEval?
 
 * Zero setup headaches: Works out-of-the-box with popular open-source LLMs
-* Fast: Get results in minutes, not hours
-* Flexible: Use our curated datasets or bring your own
-* Insightful: Compare your model against common baselines instantly
+* Fast: Get results in minutes, not hours by using rich token probabilities and less samples
+* Flexible: Use our curated huggingface datasets or make your own
 * Open-source friendly: Designed (ONLY) for models with open weights
 * Compatible: built on top of the [transformers](https://github.com/huggingface/transformers) library thus allows the use any model architecture available there.
+*  [ ] TODO: Insightful: Compare your model against common baselines instantly
 
 Stop wrestling with complex eval scripts. Start getting the insights you need, now.
 
-## How it works?
+## How does it work?
 
 We take a dataset of prompt, chosen_response, and rejected response, like the following
 
