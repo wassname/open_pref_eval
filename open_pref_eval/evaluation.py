@@ -104,3 +104,5 @@ def evaluate(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, **kwar
     df_agg['model'] = trainer.model.config._name_or_path
     return df_agg, df_raw
 
+# TODO eval over all model adapters
+# TODO default datasets

@@ -3,7 +3,7 @@ from matplotlib import pyplot as plt
 from math import pi
 import pandas as pd
 
-def radar_plot(x: pd.Series, ax=None, color='b'):
+def radar_plot(x: pd.DataFrame, ax=None, color=None):
     categories = x.index
 
     # What will be the angle of each axis in the plot? (we divide the plot / number of variable)
@@ -26,7 +26,11 @@ def radar_plot(x: pd.Series, ax=None, color='b'):
     ax.set_rlabel_position(0)
 
     # Plot data
-    ax.plot(angles, values, color=color, linewidth=1, linestyle='solid')
+    ax.plot(angles, values, color=color, linewidth=1, linestyle='solid', label=x.columns)
     
     # Fill area
     ax.fill(angles, values, color=color, alpha=0.1)
+
+    plt.ylim(0,1)
+
+    plt.legend()

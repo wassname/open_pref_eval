@@ -34,7 +34,7 @@ See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
 * Flexible: Use our curated huggingface datasets or make your own
 * Open-source friendly: Designed (ONLY) for models with open weights
 * Compatible: built on top of the [transformers](https://github.com/huggingface/transformers) library thus allows the use any model architecture available there.
-*  [ ] TODO: Insightful: Compare your model against common baselines instantly
+* [ ] TODO: Insightful: Compare your model against common baselines instantly
 
 Stop wrestling with complex eval scripts. Start getting the insights you need, now.
 
@@ -60,3 +60,5 @@ The advantages of this approach are many:
 - [x] test
 - [x] make [radar chart](https://matplotlib.org/stable/gallery/specialty_plots/radar_chart.html)
 - [ ] add more datasets (math, ethics, etc)
+  - [ ] push mmlu and ethics to huggingface and commit gen notebooks
+- [ ] improve radar plot
