@@ -31,6 +31,6 @@ def radar_plot(x: pd.DataFrame, ax=None, color=None):
     # Fill area
     ax.fill(angles, values, color=color, alpha=0.1)
 
-    plt.ylim(0,1)
+    plt.ylim(0.5,1)
 
     plt.legend()

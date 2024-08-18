@@ -10,7 +10,9 @@ from trl import DPOTrainer
 from typing import Optional, List, Union
 from collections import OrderedDict
 import numpy as np
+from .datasets import get_default_datasets
 from .trainer import get_dummy_trainer
+from .helpers.peft import set_adapter
 
 
 @torch.no_grad()
@@ -41,30 +43,50 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
     
     with compte_ref_context_manager():
-        for step, batch in enumerate(eval_dataloader):
+        for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating {dataset._info.dataset_name}")):
+
+            # FIXME test
             # batch = trainer._prepare_inputs(batch)
-
-            forward_output = trainer.concatenated_forward(model, batch)
-            (
-                chosen_logps,
-                rejected_logps,
-            ) = forward_output[:2]
-            # chosen_logavgp, rejected_logavgp = forward_output[4:6]
-
-            # Note: if we are using ipo or reprpo this will be adjusted for length, but otherwise not which would bias the results
-            logratio = chosen_logps-rejected_logps
 
             bs = batch['chosen_input_ids'].shape[0]
             i = bs * step + torch.arange(bs)
-            data.append(dict(
-                _logratio=logratio.detach().cpu().float(),
-                _chosen_logps=chosen_logps.detach().cpu().float(),
-                _l_chosen=(batch['chosen_labels']>0).sum(-1).detach().cpu().float(),
-                _l_rejected=(batch['rejected_labels']>0).sum(-1).detach().cpu().float(),
-                ds_i=i
-            ))
-    # now concat the elements of data
-    data = {k:torch.cat([d[k] for d in data], dim=0).numpy() for k in data[0].keys()}
+
+
+            def forward(trainer, model, batch):
+                forward_output = trainer.concatenated_forward(model, batch)
+                (
+                    chosen_logps,
+                    rejected_logps,
+                ) = forward_output[:2]
+
+                # Note: if we are using ipo or reprpo this will be adjusted for length, but otherwise not which would bias the results
+                logratio = chosen_logps-rejected_logps
+
+                # turn into list of dicts
+                n = dict(
+                    _logratio=logratio.detach().cpu().float().numpy(),
+                    _chosen_logps=chosen_logps.detach().cpu().float().numpy(),
+                    _l_chosen=(batch['chosen_labels']>0).sum(-1).detach().cpu().float().numpy(),
+                    _l_rejected=(batch['rejected_labels']>0).sum(-1).detach().cpu().float().numpy(),
+                    ds_i=i.numpy()
+                )
+                return [dict(
+                    model=trainer.model.config._name_or_path,
+                    # arrays
+                    **{k:v[i] for k,v in n.items()}
+                ) for i in range(bs)]
+            
+            if hasattr(model, 'peft_config') and hasattr(model, 'set_adapter'):
+                # if model has peft adapters loop through them
+                adapters = [None] +list(model.peft_config.keys())
+                for adapter_name in adapters:
+                    with set_adapter(model, adapter_name):
+                        d = forward(trainer, model, batch)
+                        for dd in d:
+                            dd['adapter'] = adapter_name if adapter_name is not None else 'base'
+                            data.append(dd)
+            else:
+                data += forward(trainer, model, batch)
 
     df = pd.DataFrame(data)
     df['correct'] = df['_logratio'] > 0.
@@ -87,7 +109,7 @@ def eval_dpo_datasets(datasets, trainer):
     df['model'] = trainer.model.config._name_or_path
     return df
 
-def evaluate(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, **kwargs):
+def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, **kwargs):
 
     if trainer is None:
         trainer = get_dummy_trainer(**kwargs)
@@ -101,8 +123,48 @@ def evaluate(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, **kwar
 
     df_agg =  df_raw.groupby(['dataset'], dropna=False)[['correct', 'prob']].mean()
     df_agg['n'] = df_raw.groupby(['dataset'], dropna=False).size()
-    df_agg['model'] = trainer.model.config._name_or_path
+    # df_agg['model'] = trainer.model.config._name_or_path
     return df_agg, df_raw
 
-# TODO eval over all model adapters
-# TODO default datasets
+
+def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
+    dfs = []
+    for model_name in model_names:
+        trainer = get_dummy_trainer(model_name=model_name, **kwargs)
+        df_agg, df_raw = evaluate_model(datasets, trainer)
+        dfs.append(df_agg)
+    df_agg = pd.concat(dfs)
+    return df_agg
+
+
+def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, batch_size=4, **kwargs):
+    """main class, rename args for clarity"""
+    if datasets is None:
+        datasets = get_default_datasets()
+    return evaluate_models(per_device_eval_batch_size=batch_size, **kwargs)
+
+
+
+# def evaluate_adapters(model, tokenizer, datasets: Optional[List[Dataset]]=None, batch_size=4, **kwargs):
+#     """
+#     use the open_pref_eval library
+
+#     to eval the model and it's adapters
+#     """
+#     1/0 # FIXME
+#     if datasets is None:
+#         datasets = get_default_datasets(N)
+
+#     adapters = [None] +list(model.peft_config.keys())
+
+#     dfs = []
+#     for adapter in adapters:
+#         print(f'Eval Adapter: {adapter}')
+#         with set_adapter(model, adapter):
+#             _, df_res2 = evaluate_model(datasets, model=model, tokenizer=tokenizer, per_device_eval_batch_size=batch_size, **kwargs)
+#         df_res2['adapter'] = adapter if adapter is not None else 'base'
+#         dfs.append(df_res2)
+#     df_res = pd.concat(dfs)
+
+#     df_agg =  df_res.groupby(['dataset', 'adapter'], dropna=False)['prob'].mean().unstack()
+#     return df_agg, df_res
