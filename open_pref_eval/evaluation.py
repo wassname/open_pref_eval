@@ -1,4 +1,4 @@
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from contextlib import contextmanager, nullcontext
 import pandas as pd
 import torch
@@ -14,6 +14,10 @@ from .datasets import get_default_datasets
 from .trainer import get_dummy_trainer
 from .helpers.peft import set_adapter
 
+
+def ds2name(dataset: Dataset) -> str:
+    split=next(iter(dataset._info.splits.values()))
+    return f'{dataset.info.dataset_name} {dataset.info.config_name} {split.name}'
 
 @torch.no_grad()
 def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
@@ -38,12 +42,12 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     dataset2 = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10)
     eval_dataloader = trainer.get_eval_dataloader(dataset2)
 
-    assert trainer.loss_type == 'ipo', 'only ipo is supported, since it gives us the avg of logps, and is not biased by response length'
+    # assert trainer.loss_type == 'ipo', 'only ipo is supported, since it gives us the avg of logps, and is not biased by response length'
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
     
     with compte_ref_context_manager():
-        for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Evaluating {dataset._info.dataset_name}")):
+        for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}")):
 
             # FIXME test
             # batch = trainer._prepare_inputs(batch)
@@ -64,11 +68,19 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
 
                 # turn into list of dicts
                 n = dict(
+                    # logps
                     _logratio=logratio.detach().cpu().float().numpy(),
                     _chosen_logps=chosen_logps.detach().cpu().float().numpy(),
+                    _rejected_logps=rejected_logps.detach().cpu().float().numpy(),
+
+                    # completion length, for checking if the model is biased
                     _l_chosen=(batch['chosen_labels']>0).sum(-1).detach().cpu().float().numpy(),
                     _l_rejected=(batch['rejected_labels']>0).sum(-1).detach().cpu().float().numpy(),
-                    ds_i=i.numpy()
+
+                    # metadata
+                    ds_i=i.numpy(),
+
+                              
                 )
                 return [dict(
                     model=trainer.model.config._name_or_path,
@@ -91,11 +103,11 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     df = pd.DataFrame(data)
     df['correct'] = df['_logratio'] > 0.
 
-    # prob mass on correct answer
+    # rel prob mass on correct answer
     odds = np.exp(df['_logratio'])
-    df['prob'] = odds / (1 + odds)
+    df['rel_prob'] = odds / (1 + odds)
 
-    df['dataset'] = dataset._info.dataset_name
+    df['dataset'] = ds2name(dataset)
     return df
 
 
@@ -117,11 +129,11 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, 
     df_raw = eval_dpo_datasets(datasets, trainer)
 
     # reorder df cols
-    cols = ['model', 'dataset', 'ds_i', 'correct', 'prob']
+    cols = ['model', 'dataset', 'ds_i', 'correct', 'rel_prob']
     others = [c for c in df_raw.columns if c not in cols]
     df_raw = df_raw[cols+others]
 
-    df_agg =  df_raw.groupby(['dataset'], dropna=False)[['correct', 'prob']].mean()
+    df_agg =  df_raw.groupby(['dataset'], dropna=False)[['correct', 'rel_prob']].mean()
     df_agg['n'] = df_raw.groupby(['dataset'], dropna=False).size()
     # df_agg['model'] = trainer.model.config._name_or_path
     return df_agg, df_raw
@@ -141,7 +153,7 @@ def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, bat
     """main class, rename args for clarity"""
     if datasets is None:
         datasets = get_default_datasets()
-    return evaluate_models(per_device_eval_batch_size=batch_size, **kwargs)
+    return evaluate_models(model_names=model_names,per_device_eval_batch_size=batch_size, datasets=datasets, **kwargs)
 
 
 
