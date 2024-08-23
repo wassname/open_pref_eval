@@ -12,12 +12,49 @@ from collections import OrderedDict
 import numpy as np
 from .datasets import get_default_datasets
 from .trainer import get_dummy_trainer
-from .helpers.peft import set_adapter
+from .helpers.peft import set_adapter, is_peft_model
 
 
 def ds2name(dataset: Dataset) -> str:
-    split=next(iter(dataset._info.splits.values()))
-    return f'{dataset.info.dataset_name} {dataset.info.config_name} {split.name}'
+    if dataset._info.splits is None:
+        split = ''
+    else:
+        split=next(iter(dataset._info.splits.values())).name
+    return f'{dataset.info.dataset_name} {dataset.info.config_name} {split}'
+
+def extract_logps(trainer, model, batch, step):
+    bs = batch['chosen_input_ids'].shape[0]
+    i = bs * step + torch.arange(bs)
+    forward_output = trainer.concatenated_forward(model, batch)
+    (
+        chosen_logps,
+        rejected_logps,
+    ) = forward_output[:2]
+
+    # Note: if we are using ipo or reprpo this will be adjusted for length, but otherwise not which would bias the results
+    logratio = chosen_logps-rejected_logps
+
+    # turn into list of dicts
+    n = dict(
+        # logps
+        _logratio=logratio.detach().cpu().float().numpy(),
+        _chosen_logps=chosen_logps.detach().cpu().float().numpy(),
+        _rejected_logps=rejected_logps.detach().cpu().float().numpy(),
+
+        # completion length, for checking if the model is biased
+        _l_chosen=(batch['chosen_labels']>0).sum(-1).detach().cpu().float().numpy(),
+        _l_rejected=(batch['rejected_labels']>0).sum(-1).detach().cpu().float().numpy(),
+
+        # metadata
+        ds_i=i.numpy(),
+
+                    
+    )
+    return [dict(
+        model=trainer.model.config._name_or_path,
+        # arrays
+        **{k:v[i] for k,v in n.items()}
+    ) for i in range(bs)]
 
 @torch.no_grad()
 def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
@@ -42,63 +79,26 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     dataset2 = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10)
     eval_dataloader = trainer.get_eval_dataloader(dataset2)
 
-    # assert trainer.loss_type == 'ipo', 'only ipo is supported, since it gives us the avg of logps, and is not biased by response length'
+    assert trainer.loss_type == 'ipo', 'only ipo is supported, since it gives us the avg of logps, and is not biased by response length'
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
     
     with compte_ref_context_manager():
         for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}")):
-
             # FIXME test
             # batch = trainer._prepare_inputs(batch)
 
-            bs = batch['chosen_input_ids'].shape[0]
-            i = bs * step + torch.arange(bs)
-
-
-            def forward(trainer, model, batch):
-                forward_output = trainer.concatenated_forward(model, batch)
-                (
-                    chosen_logps,
-                    rejected_logps,
-                ) = forward_output[:2]
-
-                # Note: if we are using ipo or reprpo this will be adjusted for length, but otherwise not which would bias the results
-                logratio = chosen_logps-rejected_logps
-
-                # turn into list of dicts
-                n = dict(
-                    # logps
-                    _logratio=logratio.detach().cpu().float().numpy(),
-                    _chosen_logps=chosen_logps.detach().cpu().float().numpy(),
-                    _rejected_logps=rejected_logps.detach().cpu().float().numpy(),
-
-                    # completion length, for checking if the model is biased
-                    _l_chosen=(batch['chosen_labels']>0).sum(-1).detach().cpu().float().numpy(),
-                    _l_rejected=(batch['rejected_labels']>0).sum(-1).detach().cpu().float().numpy(),
-
-                    # metadata
-                    ds_i=i.numpy(),
-
-                              
-                )
-                return [dict(
-                    model=trainer.model.config._name_or_path,
-                    # arrays
-                    **{k:v[i] for k,v in n.items()}
-                ) for i in range(bs)]
-            
-            if hasattr(model, 'peft_config') and hasattr(model, 'set_adapter'):
+            if is_peft_model(model):
                 # if model has peft adapters loop through them
                 adapters = [None] +list(model.peft_config.keys())
                 for adapter_name in adapters:
                     with set_adapter(model, adapter_name):
-                        d = forward(trainer, model, batch)
+                        d = extract_logps(trainer, model, batch, step)
                         for dd in d:
                             dd['adapter'] = adapter_name if adapter_name is not None else 'base'
                             data.append(dd)
             else:
-                data += forward(trainer, model, batch)
+                data += extract_logps(trainer, model, batch, step)
 
     df = pd.DataFrame(data)
     df['correct'] = df['_logratio'] > 0.
