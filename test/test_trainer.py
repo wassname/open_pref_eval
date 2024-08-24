@@ -12,7 +12,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
 )
-
+from datasets import load_dataset
 
 
 from open_pref_eval.trainer import get_dummy_trainer, dummy_dataset, OPEConfig, OPETrainer
@@ -33,6 +33,11 @@ MODELS = [
 ]
 
 class DPOTrainerTester(unittest.TestCase):
+
+    def setUp(self):
+        N = 20
+        imdb = load_dataset('wassname/imdb_dpo', name='test', split=f'test[:{N}]', keep_in_memory=False)
+        self.datasets = [imdb, dummy_dataset]
 
     @parameterized.expand(
         MODELS
@@ -56,7 +61,7 @@ class DPOTrainerTester(unittest.TestCase):
 
             df, df_raw = evaluate_model(
                 trainer=trainer, 
-                datasets=[dummy_dataset]
+                datasets=self.datasets
             )
 
             # TODO assert acc > 0.5 on IMBD sentiment dataset too
@@ -67,15 +72,12 @@ class DPOTrainerTester(unittest.TestCase):
         MODELS[:1],
     )
     def test_evaluate(self, model_name):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            df = evaluate(
-                model_names=[model_name], datasets=[dummy_dataset],
-                batch_size=4,
-
-                # output_dir=tmp_dir,
-                )
-            print(df)
-            assert df['correct'].iloc[0]>0.5
+        df = evaluate(
+            model_names=[model_name], datasets=[dummy_dataset],
+            batch_size=4,
+            )
+        print(df)
+        assert df['correct'].iloc[0]>0.5
 
 
 if __name__ == '__main__':
