@@ -24,6 +24,11 @@ def ds2name(dataset: Dataset) -> str:
         split = ''
     else:
         split=next(iter(dataset._info.splits.values())).name
+
+    config = dataset.info.config_name
+    if config == 'default':
+        config = ''
+    
     return f'{dataset.info.dataset_name} {dataset.info.config_name} {split}'
 
 def first_nonzero(x: Float[Tensor, 'b t'], dim=1) -> Float[Tensor, 'b']:
@@ -44,8 +49,8 @@ def calibrate_prob(df: pd.DataFrame, N:Union[bool,int]=False) -> pd.DataFrame:
     if N is False:
         N = 50
     
-    df_train = df.iloc[:N]
-    df_test = df.iloc[N:]
+    df_train = df.iloc[:N].copy()
+    df_test = df.iloc[N:].copy()
     calib = get_calibrator(df_train['prob'].values)
     df_test['prob_calib'] = calib.predict(df_test['prob'].values)
     

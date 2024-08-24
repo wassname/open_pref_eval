@@ -41,6 +41,7 @@ class DPOTrainerTester(unittest.TestCase):
     )
     def test_dpo_trainer(self, model_name):
         with tempfile.TemporaryDirectory() as tmp_dir:
+            print('testing', model_name)
             model, tokenizer = load_peft_model(model_name)
 
             training_args = OPEConfig(
@@ -65,14 +66,21 @@ class DPOTrainerTester(unittest.TestCase):
             print(df)
             assert df['correct'].iloc[0]>0.5
 
-            # calibration_curve
-            from sklearn.calibration import calibration_curve
+            from sklearn.metrics import coverage_error
             import numpy as np
-            import matplotlib.pyplot as plt
             y_prob = df_raw['prob_calib']
             y_true = np.ones_like(y_prob)
-            prob_true, prob_pred = calibration_curve(y_true, y_prob)
-            plt.plot(prob_pred, prob_true, marker='o', label=model_name)
+            cov_err = coverage_error(y_true, y_prob)
+            print(f'coverage_error: {cov_err}')
+            assert cov_err>0
+
+            # # calibration_curve
+            # from sklearn.calibration import calibration_curve
+            # import numpy as np
+            # import matplotlib.pyplot as plt
+
+            # prob_true, prob_pred = calibration_curve(y_true, y_prob)
+            # plt.plot(prob_pred, prob_true, marker='o', label=model_name)
 
 
     @parameterized.expand(
