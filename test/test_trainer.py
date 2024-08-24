@@ -65,22 +65,6 @@ class DPOTrainerTester(unittest.TestCase):
             print(df)
             assert df['correct'].iloc[0]>0.5
 
-            from sklearn.metrics import coverage_error
-            import numpy as np
-            y_prob = df_raw['prob_calib']
-            y_true = np.ones_like(y_prob)
-            cov_err = coverage_error(y_true, y_prob)
-            print(f'coverage_error: {cov_err}')
-            assert cov_err>0
-
-            # # calibration_curve
-            # from sklearn.calibration import calibration_curve
-            # import numpy as np
-            # import matplotlib.pyplot as plt
-
-            # prob_true, prob_pred = calibration_curve(y_true, y_prob)
-            # plt.plot(prob_pred, prob_true, marker='o', label=model_name)
-
 
     @parameterized.expand(
         MODELS[:1],
