@@ -16,7 +16,6 @@ from jaxtyping import Float, Int
 from .datasets import get_default_datasets
 from .trainer import get_dummy_trainer
 from .helpers.peft import set_adapter, is_peft_model
-from .helpers.calibrate import get_calibrator
 
 
 def ds2name(dataset: Dataset) -> str:
@@ -44,20 +43,6 @@ def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'],
     m = mask_c * mask_r
     logratio = (logp_c - logp_r) * m
     return torch.sigmoid(first_nonzero(logratio))
-
-def calibrate_prob(df: pd.DataFrame, N:Union[bool,int]=False) -> pd.DataFrame:
-    if N is False:
-        N = 50
-    
-    df_train = df.iloc[:N].copy()
-    df_test = df.iloc[N:].copy()
-    calib = get_calibrator(df_train['prob'].values)
-    df_test['prob_calib'] = calib.predict(df_test['prob'].values)
-    
-    # prevent data leakage
-    df_train['prob_calib'] = np.nan
-    df = pd.concat([df_train, df_test])
-    return df
 
 def extract_logps(trainer, model, batch, step):
     bs = batch['chosen_input_ids'].shape[0]
@@ -94,7 +79,7 @@ def extract_logps(trainer, model, batch, step):
     ) for i in range(bs)]
 
 @torch.no_grad()
-def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str], calibrate: bool=False):
+def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -137,41 +122,34 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str], calibrate
     df = pd.DataFrame(data)
     df['correct'] = df['prob'] > 0.5
 
-    if calibrate is not False:
-        df = calibrate_prob(df, N=False)
-
     df['dataset'] = ds2name(dataset)
     return df
 
 
-def eval_dpo_datasets(datasets, trainer, calibrate=False, **kwargs):
+def eval_dpo_datasets(datasets, trainer, **kwargs):
 
     dfs = []
     for dataset in datasets:
-        df = eval_dpo_dataset(trainer, dataset, calibrate=False, **kwargs)
+        df = eval_dpo_dataset(trainer, dataset, **kwargs)
         dfs.append(df)
     df = pd.concat(dfs)
-
-    # if we are doing multiple datasets, let override the calibration
-    if calibrate:
-        df = calibrate_prob(df, N=calibrate)
 
     df['model'] = trainer.model.config._name_or_path
     return df
 
-def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, calibrate=False, **kwargs):
+def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, **kwargs):
 
     if trainer is None:
         trainer = get_dummy_trainer(**kwargs)
 
-    df_raw = eval_dpo_datasets(datasets, trainer, calibrate=calibrate)
+    df_raw = eval_dpo_datasets(datasets, trainer)
 
     # reorder df cols
     cols = ['model', 'dataset', 'ds_i', 'correct', 'prob']
     others = [c for c in df_raw.columns if c not in cols]
     df_raw = df_raw[cols+others]
 
-    numeric_cols = list(set(['correct', 'prob', 'prob_calib']).intersection(df_raw.columns))
+    numeric_cols = list(set(['correct', 'prob']).intersection(df_raw.columns))
 
     df_agg =  df_raw.groupby(['dataset'], dropna=False)[numeric_cols].mean()
     df_agg['n'] = df_raw.groupby(['dataset'], dropna=False).size()
@@ -179,21 +157,21 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, 
     return df_agg, df_raw
 
 
-def evaluate_models(datasets: List[Dataset], model_names: List[str], calibrate=False, **kwargs):
+def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
     dfs = []
     for model_name in model_names:
         trainer = get_dummy_trainer(model_name=model_name, **kwargs)
-        df_agg, df_raw = evaluate_model(datasets, trainer, calibrate=calibrate)
+        df_agg, df_raw = evaluate_model(datasets, trainer)
         dfs.append(df_agg)
     df_agg = pd.concat(dfs)
     return df_agg
 
 
-def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, batch_size=4, calibrate=False, **kwargs):
+def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, batch_size=4, **kwargs):
     """main class, rename args for clarity"""
     if datasets is None:
         datasets = get_default_datasets()
-    return evaluate_models(model_names=model_names,per_device_eval_batch_size=batch_size, datasets=datasets, calibrate=calibrate, **kwargs)
+    return evaluate_models(model_names=model_names,per_device_eval_batch_size=batch_size, datasets=datasets, **kwargs)
 
 
 

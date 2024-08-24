@@ -60,7 +60,6 @@ class DPOTrainerTester(unittest.TestCase):
             df, df_raw = evaluate_model(
                 trainer=trainer, 
                 datasets=self.datasets,
-                calibrate=30,
             )
 
             print(df)
