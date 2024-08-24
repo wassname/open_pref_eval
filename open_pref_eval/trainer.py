@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
 from datasets import Dataset, features
 import tempfile
+import torch
 from trl import DPOConfig, DPOTrainer
-from typing import Optional
+from typing import Optional, Tuple
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 dummy_dataset_dict = {
@@ -96,4 +97,75 @@ def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None,
     return trainer
 
 class OPETrainer(DPOTrainer):
-    pass
+
+    @staticmethod
+    def get_batch_logps(
+        logits: torch.FloatTensor,
+        labels: torch.LongTensor,
+        label_pad_token_id: int = -100,
+        is_encoder_decoder: bool = False,
+    ) -> Tuple[torch.FloatTensor, torch.LongTensor]:
+        """
+        We modify this to return the logps and mask without reducing them
+        """
+        if logits.shape[:-1] != labels.shape:
+            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+
+        if not is_encoder_decoder:
+            labels = labels[:, 1:].clone()
+            logits = logits[:, :-1, :]
+        loss_mask = labels != label_pad_token_id
+
+        # dummy token; we'll ignore the losses on these tokens later
+        labels[labels == label_pad_token_id] = 0
+
+        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+        return per_token_logps, loss_mask
+
+
+    def concatenated_forward(
+        self, model, batch):
+        """
+        We modify this to simply return the logps and mask without reducing them
+        """
+
+        concatenated_batch = self.concatenated_inputs(
+            batch,
+            is_encoder_decoder=self.is_encoder_decoder,
+            is_vision_model=self.is_vision_model,
+            label_pad_token_id=self.label_pad_token_id,
+            padding_value=self.padding_value,
+            device=self.accelerator.device,
+        )
+        len_chosen = batch["chosen_labels"].shape[0]
+
+        model_kwargs = {}
+
+        if self.is_encoder_decoder:
+            model_kwargs["labels"] = concatenated_batch["concatenated_labels"]
+            model_kwargs["decoder_input_ids"] = concatenated_batch.pop("concatenated_decoder_input_ids", None)
+
+        outputs = model(
+            concatenated_batch["concatenated_input_ids"],
+            attention_mask=concatenated_batch["concatenated_attention_mask"],
+            use_cache=False,
+            **model_kwargs,
+        )
+        all_logits = outputs.logits
+
+        per_token_logps, mask = self.get_batch_logps(
+            all_logits,
+            concatenated_batch["concatenated_labels"],
+            # average_log_prob=self.loss_type == "ipo",
+            is_encoder_decoder=self.is_encoder_decoder,
+            label_pad_token_id=self.label_pad_token_id,
+        )
+
+        chosen_t_logps = per_token_logps[:len_chosen]
+        rejected_t_logps = per_token_logps[len_chosen:]
+
+        chosen_mask = mask[:len_chosen]
+        rejected_mask = mask[len_chosen:]
+
+        return (chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)

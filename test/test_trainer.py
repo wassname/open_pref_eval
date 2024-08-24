@@ -20,12 +20,9 @@ from open_pref_eval.evaluation import evaluate, eval_dpo_dataset, evaluate_model
 from open_pref_eval.helpers.load_models import load_peft_model
 
 MODELS = [
-                # ["gpt2"],
-            # ["lxe/lora-cerebras-gpt2.7b-alpaca-shortprompt"],
-            # ["samadpls/sentiment-analysis"],
-
             # https://huggingface.co/models?other=base_model%3Aadapter%3Aunsloth%2Ftinyllama
             ["pacozaa/tinyllama-alpaca-lora"],
+
             ["gepardzik/LLama-3-8b-rogue-lora"],
             ["bunnycore/Phi-3.5-mini-lora-rp"],
             # ["tloen/alpaca-lora-7b"],
@@ -35,9 +32,9 @@ MODELS = [
 class DPOTrainerTester(unittest.TestCase):
 
     def setUp(self):
-        N = 20
-        imdb = load_dataset('wassname/imdb_dpo', name='test', split=f'test[:{N}]', keep_in_memory=False)
-        self.datasets = [imdb, dummy_dataset]
+        N = 80
+        imdb = load_dataset('wassname/imdb_dpo', split=f'test[:{N}]', keep_in_memory=False)
+        self.datasets = [imdb]
 
     @parameterized.expand(
         MODELS
@@ -61,12 +58,22 @@ class DPOTrainerTester(unittest.TestCase):
 
             df, df_raw = evaluate_model(
                 trainer=trainer, 
-                datasets=self.datasets
+                datasets=self.datasets,
+                calibrate=30,
             )
 
-            # TODO assert acc > 0.5 on IMBD sentiment dataset too
             print(df)
             assert df['correct'].iloc[0]>0.5
+
+            # calibration_curve
+            from sklearn.calibration import calibration_curve
+            import numpy as np
+            import matplotlib.pyplot as plt
+            y_prob = df_raw['prob_calib']
+            y_true = np.ones_like(y_prob)
+            prob_true, prob_pred = calibration_curve(y_true, y_prob)
+            plt.plot(prob_pred, prob_true, marker='o', label=model_name)
+
 
     @parameterized.expand(
         MODELS[:1],
