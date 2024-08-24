@@ -16,30 +16,11 @@ from transformers import (
 
 
 from open_pref_eval.trainer import get_dummy_trainer, dummy_dataset, OPEConfig, OPETrainer
-from open_pref_eval.evaluation import evaluate, eval_dpo_dataset
+from open_pref_eval.evaluation import evaluate, eval_dpo_dataset, evaluate_model
 
 
 
 class DPOTrainerTester(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.model_id = "trl-internal-testing/dummy-GPT2-correct-vocab"
-        cls.model = AutoModelForCausalLM.from_pretrained(cls.model_id)
-        cls.ref_model = AutoModelForCausalLM.from_pretrained(cls.model_id)
-        cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_id)
-        cls.tokenizer.pad_token = cls.tokenizer.eos_token
-
-        # get t5 as seq2seq example:
-        model_id = "trl-internal-testing/T5ForConditionalGeneration-correct-vocab-calibrated"
-        cls.t5_model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
-        cls.t5_ref_model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
-        cls.t5_tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-        # get idefics2 model
-        model_id = "trl-internal-testing/tiny-random-idefics2"
-        cls.idefics2_model = AutoModelForVision2Seq.from_pretrained(model_id)
-        cls.idefics2_ref_model = AutoModelForVision2Seq.from_pretrained(model_id)
-        cls.idefics2_processor = AutoProcessor.from_pretrained(model_id)
 
     @parameterized.expand(
         [
@@ -71,9 +52,32 @@ class DPOTrainerTester(unittest.TestCase):
                 eval_dataset=dummy_dataset,
             )
 
-            df = evaluate(trainer=trainer, datasets=[dummy_dataset])
+            df, df_raw = evaluate_model(
+                trainer=trainer, 
+                datasets=[dummy_dataset]
+            )
 
-            assert len(df)>0
+            # TODO assert acc > 0.5 on IMBD sentiment dataset too
+            print(df)
+            assert df['correct'].iloc[0]>0.5
+
+    @parameterized.expand(
+        [
+            ["gpt2"],
+            # ["t5"], # TODO make it work for encoder_decoder
+        ]
+    )
+    def test_evaluate(self, name):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            df = evaluate(
+                model_names=[name], datasets=[dummy_dataset],
+                batch_size=4,
+
+                # output_dir=tmp_dir,
+                )
+            print(df)
+            assert df['correct'].iloc[0]>0.5
+
 
 if __name__ == '__main__':
     unittest.main()

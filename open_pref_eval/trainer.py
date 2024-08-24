@@ -57,8 +57,7 @@ class OPEConfig(DPOConfig):
         default=False, metadata={"help": "Remove columns not required by the model when using an nlp.Dataset."}
     )
 
-class OPETrainer(DPOTrainer):
-    pass
+
 
 def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None, per_device_eval_batch_size=8, **kwargs):
     """
@@ -95,3 +94,6 @@ def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None,
         eval_dataset=dummy_dataset,
     )
     return trainer
+
+class OPETrainer(DPOTrainer):
+    pass

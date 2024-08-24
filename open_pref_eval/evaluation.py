@@ -78,8 +78,6 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     # use hf dpo trainer to tokenizer, and make loader
     dataset2 = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10)
     eval_dataloader = trainer.get_eval_dataloader(dataset2)
-
-    assert trainer.loss_type == 'ipo', 'only ipo is supported, since it gives us the avg of logps, and is not biased by response length'
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
     
