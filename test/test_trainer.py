@@ -16,7 +16,7 @@ from datasets import load_dataset
 
 
 from open_pref_eval.trainer import get_dummy_trainer, dummy_dataset, OPEConfig, OPETrainer
-from open_pref_eval.evaluation import evaluate, eval_dpo_dataset, evaluate_model
+from open_pref_eval.evaluation import evaluate, eval_dataset, evaluate_model
 from open_pref_eval.helpers.load_models import load_peft_model
 
 MODELS = [

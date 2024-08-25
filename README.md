@@ -66,3 +66,21 @@ See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
 - [x] look at the best way to extract probs (ipo, dpo, first diverging token, brier score, calbirated probs etc)
   - [ ] change to first div token
   - [ ] add option to calibrate
+- [ ] GENIES generalisation datasets
+
+
+## FAQ
+
+Q: Why use the probability of only one token, the first differing token?
+
+A: This gives the best accuracy and the biggest accuracy contrast. It also provides scores that correspond with the accuracy. See this [notebook]([./examples/evaluate_gpt2.ipynb](https://github.com/wassname/open_pref_eval/blob/scratch_full_logits/examples/scratch_hs2.ipynb)) for more details. In the following plot of Llama-7b on a simple sentiment prediction task, we expect high accuracy, and indeed we see it for "1st_diverg", which is the method we use in this repository.
+
+ ![comparing_various_token_aggregations](./docs/img/comparing_various_token_aggregations.png)
+
+Q: Why preference datasets?
+
+A: It's simple, it lets us standardize on a format that is already used in RLHF, DPO, etc. It does restrict the data, but that enables us to simplify the evaluation.
+
+Q: Why use this library?
+
+A: I've found other evaluations to be slow and hard to modify. As a result, people hardly use them. This is an attempt to make measurement fast, hackable, and simple. If we can all measure more, we will all learn more.

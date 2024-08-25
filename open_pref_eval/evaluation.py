@@ -16,7 +16,20 @@ from jaxtyping import Float, Int
 from .datasets import get_default_datasets
 from .trainer import get_dummy_trainer
 from .helpers.peft import set_adapter, is_peft_model
+from .helpers.mem import clear_mem
 
+def to_trl_kwargs(kwargs):
+    """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
+    mapping = {
+        # alias: full_kargs
+        'batch_size': 'per_device_eval_batch_size',
+        'bf16': 'bf16_full_eval',
+        'fp16': 'fp16_full_eval',
+    }
+    for k,v in mapping.items():
+        if k in kwargs:
+            kwargs[v] = kwargs.pop(k)
+    return kwargs
 
 def ds2name(dataset: Dataset) -> str:
     if dataset._info.splits is None:
@@ -44,7 +57,47 @@ def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'],
     logratio = (logp_c - logp_r) * m
     return torch.sigmoid(first_nonzero(logratio))
 
-def extract_logps(trainer, model, batch, step):
+# def score_dpo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
+#     """
+#     calculate if the chosen completion is higher than the rejected, using DPO
+
+#     return uncalibrated probability
+#     """
+#     # get the total logprob of the completion
+#     c = (logp_c * mask_c).sum(-1)
+#     r = (logp_r * mask_r).sum(-1)
+
+#     # and the ratio in logspace
+#     logratio = c - r
+
+#     # return uncalibrated probability
+#     return torch.sigmoid(logratio.sum(1))
+
+
+# def score_ipo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
+#     # get the avg logprob of the completion
+#     c = (logp_c * mask_c).sum(-1) / mask_c.sum(-1)
+#     r = (logp_r * mask_r).sum(-1) / mask_r.sum(-1)
+
+#     # and the ratio in logspace
+#     logratio = c - r
+
+#     # return uncalibrated probability
+#     return torch.sigmoid(logratio.sum(1))
+
+
+# def score_cumsum(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
+#     # get the avg logprob over the cumulative logprob of each token, this means the initial tokens are weighted higher, but all tokens have an influence
+#     c = (logp_c * mask_c).cumsum(-1).sum(-1) / mask_c.sum(-1)
+#     r = (logp_r * mask_r).cumsum(-1).sum(-1) / mask_r.sum(-1)
+
+#     # and the ratio in logspace
+#     logratio = c - r
+
+#     # return uncalibrated probability
+#     return torch.sigmoid(logratio.sum(1))
+
+def extract_logps(trainer: DPOTrainer, model, batch, step):
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
     forward_output = trainer.concatenated_forward(model, batch)
@@ -79,7 +132,7 @@ def extract_logps(trainer, model, batch, step):
     ) for i in range(bs)]
 
 @torch.no_grad()
-def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
+def eval_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -126,11 +179,11 @@ def eval_dpo_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     return df
 
 
-def eval_dpo_datasets(datasets, trainer, **kwargs):
-
+def eval_datasets(datasets, trainer, **kwargs):
+    kwargs = to_trl_kwargs(kwargs)
     dfs = []
     for dataset in datasets:
-        df = eval_dpo_dataset(trainer, dataset, **kwargs)
+        df = eval_dataset(trainer, dataset, **kwargs)
         dfs.append(df)
     df = pd.concat(dfs)
 
@@ -138,11 +191,12 @@ def eval_dpo_datasets(datasets, trainer, **kwargs):
     return df
 
 def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, **kwargs):
+    kwargs = to_trl_kwargs(kwargs)
 
     if trainer is None:
         trainer = get_dummy_trainer(**kwargs)
 
-    df_raw = eval_dpo_datasets(datasets, trainer)
+    df_raw = eval_datasets(datasets, trainer)
 
     # reorder df cols
     cols = ['model', 'dataset', 'ds_i', 'correct', 'prob']
@@ -153,18 +207,21 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, 
 
     df_agg =  df_raw.groupby(['dataset'], dropna=False)[numeric_cols].mean()
     df_agg['n'] = df_raw.groupby(['dataset'], dropna=False).size()
-    # df_agg['model'] = trainer.model.config._name_or_path
     return df_agg, df_raw
 
 
 def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
+    kwargs = to_trl_kwargs(kwargs)
     dfs = []
     for model_name in model_names:
         trainer = get_dummy_trainer(model_name=model_name, **kwargs)
         df_agg, df_raw = evaluate_model(datasets, trainer)
+        clear_mem()
         dfs.append(df_agg)
     df_agg = pd.concat(dfs)
+    
     return df_agg
+
 
 
 def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, batch_size=4, **kwargs):
@@ -173,28 +230,3 @@ def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, bat
         datasets = get_default_datasets()
     return evaluate_models(model_names=model_names,per_device_eval_batch_size=batch_size, datasets=datasets, **kwargs)
 
-
-
-# def evaluate_adapters(model, tokenizer, datasets: Optional[List[Dataset]]=None, batch_size=4, **kwargs):
-#     """
-#     use the open_pref_eval library
-
-#     to eval the model and it's adapters
-#     """
-#     1/0 # FIXME
-#     if datasets is None:
-#         datasets = get_default_datasets(N)
-
-#     adapters = [None] +list(model.peft_config.keys())
-
-#     dfs = []
-#     for adapter in adapters:
-#         print(f'Eval Adapter: {adapter}')
-#         with set_adapter(model, adapter):
-#             _, df_res2 = evaluate_model(datasets, model=model, tokenizer=tokenizer, per_device_eval_batch_size=batch_size, **kwargs)
-#         df_res2['adapter'] = adapter if adapter is not None else 'base'
-#         dfs.append(df_res2)
-#     df_res = pd.concat(dfs)
-
-#     df_agg =  df_res.groupby(['dataset', 'adapter'], dropna=False)['prob'].mean().unstack()
-#     return df_agg, df_res
