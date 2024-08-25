@@ -24,11 +24,11 @@ def ds2name(dataset: Dataset) -> str:
     else:
         split=next(iter(dataset._info.splits.values())).name
 
-    config = dataset.info.config_name
-    if config == 'default':
-        config = ''
+    config_name = dataset.info.config_name
+    if config_name == 'default':
+        config_name = ''
     
-    return f'{dataset.info.dataset_name} {dataset.info.config_name} {split}'
+    return f'{dataset.info.dataset_name}-{config_name}-{split}'
 
 def first_nonzero(x: Float[Tensor, 'b t'], dim=1) -> Float[Tensor, 'b']:
     """get the first non zero element in a tensor"""
