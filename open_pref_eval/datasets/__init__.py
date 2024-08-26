@@ -1,7 +1,7 @@
 from datasets import load_dataset
 
 
-def get_default_datasets(N):
+def get_default_datasets(N=300):
     dataset_toxic = load_dataset('unalignment/toxic-dpo-v0.2', split=f'train[:{N}]', keep_in_memory=False)
 
     return [dataset_toxic, 
