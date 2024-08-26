@@ -14,11 +14,11 @@ import numpy as np
 from jaxtyping import Float, Int
 
 from .datasets import get_default_datasets
-from .trainer import get_dummy_trainer
+from .trainer import get_dummy_trainer, OPETrainer
 from .helpers.peft import set_adapter, is_peft_model
 from .helpers.mem import clear_mem
 
-def to_trl_kwargs(kwargs):
+def alias_trl_kwargs(kwargs):
     """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
     mapping = {
         # alias: full_kargs
@@ -97,7 +97,7 @@ def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'],
 #     # return uncalibrated probability
 #     return torch.sigmoid(logratio.sum(1))
 
-def extract_logps(trainer: DPOTrainer, model, batch, step):
+def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict, step: int) -> List[dict]:
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
     forward_output = trainer.concatenated_forward(model, batch)
@@ -132,7 +132,7 @@ def extract_logps(trainer: DPOTrainer, model, batch, step):
     ) for i in range(bs)]
 
 @torch.no_grad()
-def eval_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
+def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str]) -> pd.DataFrame:
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -179,22 +179,21 @@ def eval_dataset(trainer: DPOTrainer, dataset: Union[Dataset,str]):
     return df
 
 
-def eval_datasets(datasets, trainer, **kwargs):
-    kwargs = to_trl_kwargs(kwargs)
+def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None) -> pd.DataFrame:
     dfs = []
     for dataset in datasets:
-        df = eval_dataset(trainer, dataset, **kwargs)
+        df = eval_dataset(trainer, dataset)
         dfs.append(df)
     df = pd.concat(dfs)
 
     df['model'] = trainer.model.config._name_or_path
     return df
 
-def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, **kwargs):
-    kwargs = to_trl_kwargs(kwargs)
+def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, **trainer_kwargs):
+    trainer_kwargs = alias_trl_kwargs(trainer_kwargs)
 
     if trainer is None:
-        trainer = get_dummy_trainer(**kwargs)
+        trainer = get_dummy_trainer(model_kwargs=model_kwargs, **trainer_kwargs)
 
     df_raw = eval_datasets(datasets, trainer)
 
@@ -211,16 +210,17 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[DPOTrainer]=None, 
 
 
 def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
-    kwargs = to_trl_kwargs(kwargs)
     dfs = []
-    for model_name in model_names:
-        trainer = get_dummy_trainer(model_name=model_name, **kwargs)
-        df_agg, df_raw = evaluate_model(datasets, trainer)
+    dfs_raw = []
+    for model_name in tqdm(model_names, unit='model'):
+        df_agg, df_raw = evaluate_model(datasets, model_name=model_name, **kwargs)
         clear_mem()
         dfs.append(df_agg)
+        dfs_raw.append(df_raw)
     df_agg = pd.concat(dfs)
+    df_raw = pd.concat(dfs_raw)
     
-    return df_agg
+    return df_agg, df_raw
 
 
 

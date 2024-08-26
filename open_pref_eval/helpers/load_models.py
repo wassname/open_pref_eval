@@ -6,6 +6,10 @@ def load_peft_model(model_name):
     base_model = AutoModelForCausalLM.from_pretrained(model_name)
     model = PeftModelForCausalLM.from_pretrained(
         base_model,
-        model_name, config=peft_config)
+        model_name, 
+        low_cpu_mem_usage=True,
+        # torch_dtype=torch.bfloat16,
+        # attn_implementation="flash_attention_2",
+        config=peft_config)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer

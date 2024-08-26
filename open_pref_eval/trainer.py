@@ -60,7 +60,7 @@ class OPEConfig(DPOConfig):
 
 
 
-def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None, per_device_eval_batch_size=8, **kwargs):
+def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None, per_device_eval_batch_size=8, model_kwargs={}, **kwargs):
     """
     Make a dummy trainer, 
 
@@ -77,7 +77,9 @@ def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None,
         )
 
     if model_name is not None:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name,
+                                                    **model_kwargs,
+                                                     )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token

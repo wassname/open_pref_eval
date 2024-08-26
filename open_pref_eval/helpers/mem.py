@@ -1,4 +1,5 @@
 import gc
+import torch
 
 def clear_mem():
     gc.collect()
