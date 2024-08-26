@@ -186,7 +186,7 @@ def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None) -
         dfs.append(df)
     df = pd.concat(dfs)
 
-    df['model'] = trainer.model.config._name_or_path
+    df['model'] = trainer.model.config._name_or_path # Error only has the base model
     return df
 
 def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, **trainer_kwargs):
@@ -214,6 +214,8 @@ def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
     dfs_raw = []
     for model_name in tqdm(model_names, unit='model'):
         df_agg, df_raw = evaluate_model(datasets, model_name=model_name, **kwargs)
+        df_agg['model'] = model_name
+        df_raw['model'] = model_name
         clear_mem()
         dfs.append(df_agg)
         dfs_raw.append(df_raw)
