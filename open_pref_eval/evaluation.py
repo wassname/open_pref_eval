@@ -52,7 +52,10 @@ def calibrate_prob(df: pd.DataFrame, N:Union[bool,int]=False) -> pd.DataFrame:
     df_train = df.iloc[:N].copy()
     df_test = df.iloc[N:].copy()
     calib = get_calibrator(df_train['prob'].values)
-    df_test['prob_calib'] = calib.predict(df_test['prob'].values)
+    if hasattr(calib, 'predict_proba'):
+        df_test['prob_calib'] = calib.predict_proba(df_test['prob'].values)[:,1]
+    else:
+        df_test['prob_calib'] = calib.predict(df_test['prob'].values)
     
     # prevent data leakage
     df_train['prob_calib'] = np.nan

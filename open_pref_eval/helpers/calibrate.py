@@ -1,5 +1,6 @@
 from sklearn.isotonic import IsotonicRegression
 from sklearn.calibration import _SigmoidCalibration
+from sklearn.linear_model import LogisticRegression
 import torch
 import numpy as np
 
@@ -12,8 +13,9 @@ def get_calibrator(prob_chosen):
     # X[N//2:] = 1 - X[N//2:]
     # y[N//2:] = 1 - y[N//2:]
 
-    return IsotonicRegression(out_of_bounds="nan", increasing=True).fit(X, y)
-    return _SigmoidCalibration().fit(X, y)
+    # return IsotonicRegression(out_of_bounds="nan", increasing=True).fit(X, y)
+    # return _SigmoidCalibration().fit(X, y)
+    return LogisticRegression().fit(X.reshape(-1, 1), y)
 
 class PTIsotonicRegression:
     """Use Sklearn's IsotonicRegression with PyTorch tensors to calibrate probabilities
