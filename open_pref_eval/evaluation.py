@@ -8,15 +8,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm.auto import tqdm
 from datasets import Dataset
 from trl import DPOTrainer
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Callable
 from collections import OrderedDict
 import numpy as np
 from jaxtyping import Float, Int
 
-from .datasets import get_default_datasets
+from .datasets import get_default_datasets, ds2name
 from .trainer import get_dummy_trainer, OPETrainer
-from .helpers.peft import set_adapter, is_peft_model
+from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
+from .scoring import score_1st_diverg
 
 def alias_trl_kwargs(kwargs):
     """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
@@ -31,80 +32,17 @@ def alias_trl_kwargs(kwargs):
             kwargs[v] = kwargs.pop(k)
     return kwargs
 
-def ds2name(dataset: Dataset) -> str:
-    if dataset._info.splits is None:
-        split = ''
-    else:
-        split=next(iter(dataset._info.splits.values())).name
-
-    config_name = dataset.info.config_name
-    if config_name == 'default':
-        config_name = ''
-    
-    return f'{dataset.info.dataset_name}-{config_name}-{split}'
-
-def first_nonzero(x: Float[Tensor, 'b t'], dim=1) -> Float[Tensor, 'b']:
-    """get the first non zero element in a tensor"""
-    return x[torch.arange(x.shape[0]), (x != 0).float().argmax(dim=dim)]
-
-def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
-    """
-    calculate if the chosen completion is higher than the rejected, using first divering token
-
-    return uncalibrated probability
-    """
-    m = mask_c * mask_r
-    logratio = (logp_c - logp_r) * m
-    return torch.sigmoid(first_nonzero(logratio))
-
-# def score_dpo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
-#     """
-#     calculate if the chosen completion is higher than the rejected, using DPO
-
-#     return uncalibrated probability
-#     """
-#     # get the total logprob of the completion
-#     c = (logp_c * mask_c).sum(-1)
-#     r = (logp_r * mask_r).sum(-1)
-
-#     # and the ratio in logspace
-#     logratio = c - r
-
-#     # return uncalibrated probability
-#     return torch.sigmoid(logratio.sum(1))
 
 
-# def score_ipo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
-#     # get the avg logprob of the completion
-#     c = (logp_c * mask_c).sum(-1) / mask_c.sum(-1)
-#     r = (logp_r * mask_r).sum(-1) / mask_r.sum(-1)
-
-#     # and the ratio in logspace
-#     logratio = c - r
-
-#     # return uncalibrated probability
-#     return torch.sigmoid(logratio.sum(1))
-
-
-# def score_cumsum(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
-#     # get the avg logprob over the cumulative logprob of each token, this means the initial tokens are weighted higher, but all tokens have an influence
-#     c = (logp_c * mask_c).cumsum(-1).sum(-1) / mask_c.sum(-1)
-#     r = (logp_r * mask_r).cumsum(-1).sum(-1) / mask_r.sum(-1)
-
-#     # and the ratio in logspace
-#     logratio = c - r
-
-#     # return uncalibrated probability
-#     return torch.sigmoid(logratio.sum(1))
-
-def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict, step: int) -> List[dict]:
+def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict, step: int, score_fn: Optional[Callable]=score_1st_diverg
+                  ) -> List[dict]:
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
     forward_output = trainer.concatenated_forward(model, batch)
     (chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask) = forward_output
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
-    prob = score_1st_diverg(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
+    prob = score_fn(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
 
     # logprob of whole completion
     chosen_logp = (chosen_t_logps * chosen_mask).sum(1)
@@ -131,8 +69,11 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
         **{k:v[i] for k,v in n.items()}
     ) for i in range(bs)]
 
+
+
+
 @torch.no_grad()
-def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str]) -> pd.DataFrame:
+def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, score_fn: Optional[Callable]=None) -> pd.DataFrame:
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -162,15 +103,16 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str]) -> pd.DataFra
 
             if is_peft_model(model):
                 # if model has peft adapters loop through them
-                adapters = [None] +list(model.peft_config.keys())
-                for adapter_name in adapters:
-                    with set_adapter(model, adapter_name):
-                        d = extract_logps(trainer, model, batch, step)
+                if adapter_names is None:
+                    adapter_names = [None] +list(model.peft_config.keys())
+                for adapter_name in adapter_names:
+                    with set_adapter(trainer.model, adapter_name):
+                        d = extract_logps(trainer, model, batch, step, score_fn=score_fn)
                         for dd in d:
                             dd['adapter'] = adapter_name if adapter_name is not None else 'base'
                             data.append(dd)
             else:
-                data += extract_logps(trainer, model, batch, step)
+                data += extract_logps(trainer, trainer.model, batch, step, score_fn=score_fn)
 
     df = pd.DataFrame(data)
     df['correct'] = df['prob'] > 0.5
@@ -179,23 +121,23 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str]) -> pd.DataFra
     return df
 
 
-def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None) -> pd.DataFrame:
+def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, score_fn=None) -> pd.DataFrame:
     dfs = []
     for dataset in datasets:
-        df = eval_dataset(trainer, dataset)
+        df = eval_dataset(trainer, dataset, score_fn=score_fn)
         dfs.append(df)
     df = pd.concat(dfs)
 
     df['model'] = trainer.model.config._name_or_path # Error only has the base model
     return df
 
-def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, **trainer_kwargs):
+def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=None, **trainer_kwargs):
     trainer_kwargs = alias_trl_kwargs(trainer_kwargs)
 
     if trainer is None:
         trainer = get_dummy_trainer(model_kwargs=model_kwargs, **trainer_kwargs)
 
-    df_raw = eval_datasets(datasets, trainer)
+    df_raw = eval_datasets(datasets, trainer, score_fn=score_fn)
 
     # reorder df cols
     cols = ['model', 'dataset', 'ds_i', 'correct', 'prob']
@@ -203,32 +145,33 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, 
     df_raw = df_raw[cols+others]
 
     numeric_cols = list(set(['correct', 'prob']).intersection(df_raw.columns))
+    agg_cols = ['dataset']
+    if 'adapter' in df_raw.columns:
+        agg_cols.append('adapter')
 
-    df_agg =  df_raw.groupby(['dataset'], dropna=False)[numeric_cols].mean()
-    df_agg['n'] = df_raw.groupby(['dataset'], dropna=False).size()
+    df_agg =  df_raw.groupby(agg_cols, dropna=False)[numeric_cols].mean()
+    df_agg['n'] = df_raw.groupby(agg_cols, dropna=False).size()
     return df_agg, df_raw
 
 
 def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
-    dfs = []
     dfs_raw = []
     for model_name in tqdm(model_names, unit='model'):
-        df_agg, df_raw = evaluate_model(datasets, model_name=model_name, **kwargs)
-        df_agg['model'] = model_name
+        df_raw = evaluate_model(datasets=datasets, model_name=model_name, **kwargs)
         df_raw['model'] = model_name
         clear_mem()
-        dfs.append(df_agg)
         dfs_raw.append(df_raw)
-    df_agg = pd.concat(dfs)
     df_raw = pd.concat(dfs_raw)
+
+    df_agg = df_raw.groupby(['model', 'dataset'], dropna=False)[['correct', 'prob']].mean()
     
     return df_agg, df_raw
 
 
 
-def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, batch_size=4, **kwargs):
+def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, **kwargs):
     """main class, rename args for clarity"""
     if datasets is None:
         datasets = get_default_datasets()
-    return evaluate_models(model_names=model_names,per_device_eval_batch_size=batch_size, datasets=datasets, **kwargs)
+    return evaluate_models(model_names=model_names, datasets=datasets, **kwargs)
 

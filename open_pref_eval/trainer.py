@@ -87,7 +87,7 @@ def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None,
     if model is None:
         raise ValueError('model or model_name must be provided')
 
-    # we rse a TRL class
+    # we use a TRL class
     trainer = OPETrainer(
         model=model,
         ref_model=None,

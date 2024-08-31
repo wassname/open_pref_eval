@@ -10,6 +10,15 @@ def is_peft_model(model):
         return True
     return False
 
+def adapter_is_disabled(peft_model) -> bool:
+    """Given a peft model work out is adapters are enabled or disabled"""
+    from peft.peft_model import BaseTunerLayer, PeftModel
+    from peft.utils.other import ModulesToSaveWrapper
+    for module in peft_model.model.modules():
+        if isinstance(module, (BaseTunerLayer, ModulesToSaveWrapper)):
+            # print(help(module.enable_adapters))
+            return module._disable_adapters
+
 
 @contextmanager
 def set_adapter(model: PeftModel, adapter_name: str = None):
@@ -23,5 +32,6 @@ def set_adapter(model: PeftModel, adapter_name: str = None):
                 yield model
     except Exception as e:
         print(f"Error: {e}")
+        raise e
     finally:
         model.set_adapter(old_adapter_name)
