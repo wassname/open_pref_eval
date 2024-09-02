@@ -71,9 +71,14 @@ See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
 
 ## FAQ
 
-Q: Why use the probability of only one token, the first differing token?
+Q: Why use the weighted prob over all the tokens?
 
-A: This gives the best accuracy and the biggest accuracy contrast. It also provides scores that correspond with the accuracy. See this [notebook]([./examples/evaluate_gpt2.ipynb](https://github.com/wassname/open_pref_eval/blob/scratch_full_logits/examples/scratch_hs2.ipynb)) for more details. In the following plot of Llama-7b on a simple sentiment prediction task, we expect high accuracy, and indeed we see it for "1st_diverg", which is the method we use in this repository.
+A: This gives the best accuracy contrast. And it best shows things like generalisation.
+
+
+ It also provides scores that correspond with the accuracy. See this [notebook]([./examples/evaluate_gpt2.ipynb](https://github.com/wassname/open_pref_eval/blob/scratch_full_logits/examples/scratch_hs2.ipynb)) for more details. In the following plot of Llama-7b on a simple sentiment prediction task, we expect high accuracy, and indeed we see it for "1st_diverg", which is the method we use in this repository.
+
+ TODO: add follow up experiments using GENIES adapters I made
 
  ![comparing_various_token_aggregations](./docs/img/comparing_various_token_aggregations.png)
 

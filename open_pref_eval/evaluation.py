@@ -6,7 +6,6 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm.auto import tqdm
-from datasets import Dataset
 from trl import DPOTrainer
 from typing import Optional, List, Union, Callable
 from collections import OrderedDict
@@ -17,24 +16,31 @@ from .datasets import get_default_datasets, ds2name
 from .trainer import get_dummy_trainer, OPETrainer
 from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
-from .scoring import score_1st_diverg
+from .scoring import score_1st_diverg, score_weighted, score_dpo, score_ipo
 
 def alias_trl_kwargs(kwargs):
     """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
-    mapping = {
+    popping = {
         # alias: full_kargs
         'batch_size': 'per_device_eval_batch_size',
+    }
+    aliasing = {
         'bf16': 'bf16_full_eval',
         'fp16': 'fp16_full_eval',
     }
-    for k,v in mapping.items():
+    for k,v in popping.items():
         if k in kwargs:
-            kwargs[v] = kwargs.pop(k)
+            if not v in kwargs:
+                kwargs[v] = kwargs.pop(k)
+    for k,v in aliasing.items():
+        if k in kwargs:
+            if not v in kwargs:
+                kwargs[v] = kwargs[k]
     return kwargs
 
 
 
-def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict, step: int, score_fn: Optional[Callable]=score_1st_diverg
+def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict, step: int, score_fn: Optional[Callable]=score_weighted
                   ) -> List[dict]:
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
@@ -73,7 +79,7 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
 
 
 @torch.no_grad()
-def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, score_fn: Optional[Callable]=None) -> pd.DataFrame:
+def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, **kwargs) -> pd.DataFrame:
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -107,12 +113,13 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
                     adapter_names = [None] +list(model.peft_config.keys())
                 for adapter_name in adapter_names:
                     with set_adapter(trainer.model, adapter_name):
-                        d = extract_logps(trainer, model, batch, step, score_fn=score_fn)
+                        d = extract_logps(trainer, model, batch, step, **kwargs)
                         for dd in d:
                             dd['adapter'] = adapter_name if adapter_name is not None else 'base'
                             data.append(dd)
             else:
-                data += extract_logps(trainer, trainer.model, batch, step, score_fn=score_fn)
+                data += extract_logps(trainer, trainer.model, batch, step, **kwargs)
+    clear_mem()
 
     df = pd.DataFrame(data)
     df['correct'] = df['prob'] > 0.5
@@ -121,17 +128,17 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     return df
 
 
-def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, score_fn=None) -> pd.DataFrame:
+def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, **kwargs) -> pd.DataFrame:
     dfs = []
     for dataset in datasets:
-        df = eval_dataset(trainer, dataset, score_fn=score_fn)
+        df = eval_dataset(trainer, dataset, **kwargs)
         dfs.append(df)
     df = pd.concat(dfs)
 
     df['model'] = trainer.model.config._name_or_path # Error only has the base model
     return df
 
-def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=None, **trainer_kwargs):
+def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=score_weighted, **trainer_kwargs):
     trainer_kwargs = alias_trl_kwargs(trainer_kwargs)
 
     if trainer is None:
@@ -151,6 +158,7 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, 
 
     df_agg =  df_raw.groupby(agg_cols, dropna=False)[numeric_cols].mean()
     df_agg['n'] = df_raw.groupby(agg_cols, dropna=False).size()
+    clear_mem()
     return df_agg, df_raw
 
 
