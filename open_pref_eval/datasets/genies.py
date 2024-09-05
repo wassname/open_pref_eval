@@ -1,4 +1,5 @@
 from datasets import load_dataset
+from . import load_dataset_n
 
 
 GENIES_ALL = [
@@ -316,19 +317,15 @@ GENIES = [
     {"source": "alpaca_mmlu", "target": "reward_seeking", "label": "probing", "category": "unwanted_personas"}
 ]
 
-def dist2datasets(dist, key='target', source=None, N=None):
+def dist2datasets(dist, key='target', split='test', source=None, N=None):
     datasets = []
     for row in dist:
         name = row[key]
         if source is not None and row['source'] not in source:
-            continue
-
-        split=f'test'
-        if N is not None:
-            split += f'[:{N}]'
+            continue       
         
         try:
-            ds = load_dataset('wassname/genie_dpo', name=name, split=split, keep_in_memory=False)
+            ds = load_dataset_n('wassname/genie_dpo', name=name, split=split, N=N)
             datasets.append(ds)
         except ValueError:
             print(f"Dataset {name} not found")
