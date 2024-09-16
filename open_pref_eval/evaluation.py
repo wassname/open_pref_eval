@@ -130,23 +130,23 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     return df
 
 
-def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, **kwargs) -> pd.DataFrame:
+def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, verbose=False, **kwargs) -> pd.DataFrame:
     dfs = []
     for dataset in datasets:
-        df = eval_dataset(trainer, dataset, **kwargs)
+        df = eval_dataset(trainer, dataset, verbose=verbose, **kwargs)
         dfs.append(df)
     df = pd.concat(dfs)
 
     df['model'] = trainer.model.config._name_or_path # Error only has the base model
     return df
 
-def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=score_weighted, **trainer_kwargs):
+def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=score_weighted, verbose=False, **trainer_kwargs):
     trainer_kwargs = alias_trl_kwargs(trainer_kwargs)
 
     if trainer is None:
         trainer = get_dummy_trainer(model_kwargs=model_kwargs, **trainer_kwargs)
 
-    df_raw = eval_datasets(datasets, trainer, score_fn=score_fn)
+    df_raw = eval_datasets(datasets, trainer, score_fn=score_fn, verbose=verbose, )
 
     # reorder df cols
     cols = ['model', 'dataset', 'ds_i', 'correct', 'prob']
