@@ -79,7 +79,7 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
 
 
 @torch.no_grad()
-def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, **kwargs) -> pd.DataFrame:
+def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, verbose=True, **kwargs) -> pd.DataFrame:
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -102,6 +102,8 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     eval_dataloader = trainer.get_eval_dataloader(dataset2)
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
+
+    if not verbose: tqdm = lambda x: x
     
     with compte_ref_context_manager():
         for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}")):
@@ -164,7 +166,7 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, 
 
 def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
     dfs_raw = []
-    for model_name in tqdm(model_names, unit='model'):
+    for model_name in model_names:
         df_raw = evaluate_model(datasets=datasets, model_name=model_name, **kwargs)
         df_raw['model'] = model_name
         clear_mem()
