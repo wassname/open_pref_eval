@@ -103,7 +103,9 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
 
-    if not verbose: tqdm = lambda x: x
+    def noop(*args, **kwargs):
+        return args
+    if not verbose: tqdm = noop
     
     with compte_ref_context_manager():
         for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}")):
