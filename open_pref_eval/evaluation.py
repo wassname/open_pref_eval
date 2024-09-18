@@ -79,7 +79,7 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
 
 
 @torch.no_grad()
-def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, verbose=True, **kwargs) -> pd.DataFrame:
+def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, verbose=1, **kwargs) -> pd.DataFrame:
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -102,13 +102,9 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     eval_dataloader = trainer.get_eval_dataloader(dataset2)
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
-
-    def noop(*args, **kwargs):
-        return args
-    if not verbose: tqdm = noop
     
     with compte_ref_context_manager():
-        for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}")):
+        for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}", disable=verbose<2)):
             batch = trainer._prepare_inputs(batch)
 
             if is_peft_model(model):
@@ -132,9 +128,9 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     return df
 
 
-def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, verbose=False, **kwargs) -> pd.DataFrame:
+def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, verbose=1, **kwargs) -> pd.DataFrame:
     dfs = []
-    for dataset in datasets:
+    for dataset in tqdm(datasets, disable=not verbose, unit='ds'):
         df = eval_dataset(trainer, dataset, verbose=verbose, **kwargs)
         dfs.append(df)
     df = pd.concat(dfs)
@@ -142,7 +138,7 @@ def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, v
     df['model'] = trainer.model.config._name_or_path # Error only has the base model
     return df
 
-def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=score_weighted, verbose=False, **trainer_kwargs):
+def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=score_weighted, verbose=1, **trainer_kwargs):
     trainer_kwargs = alias_trl_kwargs(trainer_kwargs)
 
     if trainer is None:
