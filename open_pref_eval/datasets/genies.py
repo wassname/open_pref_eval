@@ -325,7 +325,7 @@ def dist2datasets(dist, key='target', split='test', source=None, N=None):
             continue       
         
         try:
-            ds = load_dataset_n('wassname/genie_dpo', name=name, split=split, N=N)
+            ds = load_dataset_n('wassname/genies_preferences', name=name, split=split, N=N)
             datasets.append(ds)
         except ValueError:
             print(f"Dataset {name} not found")

@@ -33,13 +33,13 @@ class DPOTrainerTester(unittest.TestCase):
 
     def setUp(self):
         N = 80
-        imdb = load_dataset('wassname/imdb_dpo', split=f'test[:{N}]', keep_in_memory=False)
+        imdb = load_dataset('wassname/imdb_preferences', split=f'test[:{N}]', keep_in_memory=False)
         self.datasets = [imdb]
 
     @parameterized.expand(
         MODELS
     )
-    def test_dpo_trainer(self, model_name):
+    def test_preferences_trainer(self, model_name):
         with tempfile.TemporaryDirectory() as tmp_dir:
             print('testing', model_name)
             model, tokenizer = load_peft_model(model_name)

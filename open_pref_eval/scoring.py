@@ -21,7 +21,7 @@ def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'],
     logratio = (logp_c - logp_r) * m
     return torch.sigmoid(first_nonzero(logratio))
 
-def score_dpo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
+def score_preferences(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
     """
     calculate if the chosen completion is higher than the rejected, using DPO
 

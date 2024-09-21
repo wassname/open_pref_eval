@@ -24,15 +24,15 @@ def get_default_datasets(N=300):
     dataset_toxic = load_dataset_n('unalignment/toxic-dpo-v0.2', split='train', N=N)
 
     return [dataset_toxic, 
-            load_dataset_n('wassname/imdb_dpo', N=N),
-            load_dataset_n('wassname/truthful_qa_dpo', split='validation', N=N),
-            load_dataset_n('wassname/mmlu_dpo', name='elementary_mathematics', N=N),
+            load_dataset_n('wassname/imdb_preferences', N=N),
+            load_dataset_n('wassname/truthful_qa_preferences', split='validation', N=N),
+            load_dataset_n('wassname/mmlu_preferences', name='elementary_mathematics', N=N),
 
-            load_dataset_n('wassname/ethics_expression_dpo', name='commonsense', N=N),
+            load_dataset_n('wassname/ethics_expression_preferences', name='commonsense', N=N),
 
-            load_dataset_n('wassname/ethics_expression_dpo', name='utilitarianism', N=N),
+            load_dataset_n('wassname/ethics_expression_preferences', name='utilitarianism', N=N),
 
-            load_dataset_n('wassname/ethics_expression_dpo', name='justice', N=N),
+            load_dataset_n('wassname/ethics_expression_preferences', name='justice', N=N),
 
-            load_dataset_n('wassname/ethics_expression_dpo', name='deontology', N=N),
+            load_dataset_n('wassname/ethics_expression_preferences', name='deontology', N=N),
             ]

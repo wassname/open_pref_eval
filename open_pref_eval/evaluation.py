@@ -16,7 +16,7 @@ from .datasets import get_default_datasets, ds2name
 from .trainer import get_dummy_trainer, OPETrainer
 from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
-from .scoring import score_1st_diverg, score_weighted, score_dpo, score_ipo
+from .scoring import score_1st_diverg, score_weighted, score_preferences, score_ipo
 
 def alias_trl_kwargs(kwargs):
     """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
