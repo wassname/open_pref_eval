@@ -54,21 +54,29 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
     chosen_logp = (chosen_t_logps * chosen_mask).sum(1)
     rejected_logp = (rejected_t_logps * rejected_mask).sum(1)
 
+    # calculate perplexity
+    chosen_ppl = torch.exp(-chosen_logp / chosen_mask.sum(1))
+    rejected_ppl = torch.exp(-rejected_t_logps / rejected_mask.sum(1))
+
+
     # turn into list of dicts
     n = dict(
-        prob=prob.detach().cpu().float().numpy(),
+        prob=prob,
 
-        # debug: logprobs of completions, can be used to check if coherency is maintained
-        _chosen_logps=chosen_logp.detach().cpu().float().numpy(),
-        _rejected_logps=rejected_logp.detach().cpu().float().numpy(),
+        # debug: logprobs and ppl of completions, can be used to check if coherency is maintained
+        _chosen_logps=chosen_logp,
+        _rejected_logps=rejected_logp,
+        _chosen_ppl=chosen_ppl,
+        _rejected_ppl=rejected_ppl,
 
         # debug: completion length, for checking if the model is biased
-        _l_chosen=(batch['chosen_labels']>0).sum(-1).detach().cpu().float().numpy(),
-        _l_rejected=(batch['rejected_labels']>0).sum(-1).detach().cpu().float().numpy(),
-
-        # metadata
-        ds_i=i.numpy(),
+        _l_chosen=(batch['chosen_labels']>0).sum(-1),
+        _l_rejected=(batch['rejected_labels']>0).sum(-1),
     )
+    n = {k:v.detach().cpu().float().numpy() for k,v in n.items()}
+    # metadata
+    n['ds_i'] = i.numpy()
+
     return [dict(
         model=trainer.model.config._name_or_path,
         # arrays
