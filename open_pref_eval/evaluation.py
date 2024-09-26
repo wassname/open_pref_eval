@@ -56,7 +56,7 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
 
     # calculate perplexity
     chosen_ppl = torch.exp(-chosen_logp / chosen_mask.sum(1))
-    rejected_ppl = torch.exp(-rejected_t_logps / rejected_mask.sum(1))
+    rejected_ppl = torch.exp(-rejected_logp / rejected_mask.sum(1))
 
 
     # turn into list of dicts
