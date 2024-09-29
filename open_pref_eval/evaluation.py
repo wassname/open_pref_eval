@@ -18,6 +18,20 @@ from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
 from .scoring import score_1st_diverg, score_weighted, score_preferences, score_ipo
 
+import contextlib
+from datasets.utils.logging import disable_progress_bar, enable_progress_bar, is_progress_bar_enabled
+
+@contextlib.contextmanager
+def no_hf_tqdm():
+    """turn off the huggingface datasets progress bar"""
+    original_value = is_progress_bar_enabled()
+    disable_progress_bar()
+    try:
+        yield
+    finally:
+        if original_value:
+            enable_progress_bar()
+
 def alias_trl_kwargs(kwargs):
     """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
     popping = {
@@ -104,8 +118,9 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
 
     data = []
     # use hf dpo trainer to tokenizer, and make loader
-    dataset = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10, desc='tokenize')
-    eval_dataloader = trainer.get_eval_dataloader(dataset)
+    with no_hf_tqdm():
+        dataset = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10, desc='tokenize')
+        eval_dataloader = trainer.get_eval_dataloader(dataset)
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
     
@@ -137,7 +152,7 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
 
 def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, verbose=1, **kwargs) -> pd.DataFrame:
     dfs = []
-    for dataset in tqdm(datasets, disable=not verbose, unit='ds'):
+    for dataset in tqdm(datasets, disable=not verbose, unit='dataset'):
         df = eval_dataset(trainer, dataset, verbose=verbose, **kwargs)
         dfs.append(df)
         clear_mem()
