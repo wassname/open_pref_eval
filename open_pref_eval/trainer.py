@@ -5,6 +5,28 @@ import torch
 from trl import DPOConfig, DPOTrainer
 from typing import Optional, Tuple
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from .helpers.hf_progbar import no_hf_tqdm
+
+
+def alias_trl_kwargs(kwargs):
+    """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
+    popping = {
+        # alias: full_kargs
+        'batch_size': 'per_device_eval_batch_size',
+    }
+    aliasing = {
+        'bf16': 'bf16_full_eval',
+        'fp16': 'fp16_full_eval',
+    }
+    for k,v in popping.items():
+        if k in kwargs:
+            if not v in kwargs:
+                kwargs[v] = kwargs.pop(k)
+    for k,v in aliasing.items():
+        if k in kwargs:
+            if not v in kwargs:
+                kwargs[v] = kwargs[k]
+    return kwargs
 
 dummy_dataset_dict = {
     "prompt": [
@@ -59,7 +81,7 @@ class OPEConfig(DPOConfig):
     )
 
 
-
+@no_hf_tqdm()
 def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None, per_device_eval_batch_size=8, model_kwargs={}, **kwargs):
     """
     Make a dummy trainer, 

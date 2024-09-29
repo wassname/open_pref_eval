@@ -13,44 +13,13 @@ import numpy as np
 from jaxtyping import Float, Int
 
 from .datasets import get_default_datasets, ds2name
-from .trainer import get_dummy_trainer, OPETrainer
+from .trainer import get_dummy_trainer, OPETrainer, alias_trl_kwargs
 from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
 from .scoring import score_1st_diverg, score_weighted, score_preferences, score_ipo
+from .helpers.hf_progbar import no_hf_tqdm
 
-import contextlib
-from datasets.utils.logging import disable_progress_bar, enable_progress_bar, is_progress_bar_enabled
 
-@contextlib.contextmanager
-def no_hf_tqdm():
-    """turn off the huggingface datasets progress bar"""
-    original_value = is_progress_bar_enabled()
-    disable_progress_bar()
-    try:
-        yield
-    finally:
-        if original_value:
-            enable_progress_bar()
-
-def alias_trl_kwargs(kwargs):
-    """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
-    popping = {
-        # alias: full_kargs
-        'batch_size': 'per_device_eval_batch_size',
-    }
-    aliasing = {
-        'bf16': 'bf16_full_eval',
-        'fp16': 'fp16_full_eval',
-    }
-    for k,v in popping.items():
-        if k in kwargs:
-            if not v in kwargs:
-                kwargs[v] = kwargs.pop(k)
-    for k,v in aliasing.items():
-        if k in kwargs:
-            if not v in kwargs:
-                kwargs[v] = kwargs[k]
-    return kwargs
 
 
 
