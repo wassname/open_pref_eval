@@ -66,6 +66,7 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
         # debug: logprobs and ppl of completions, can be used to check if coherency is maintained
         _chosen_logps=chosen_logp,
         _rejected_logps=rejected_logp,
+
         _chosen_ppl=chosen_ppl,
         _rejected_ppl=rejected_ppl,
 
@@ -77,11 +78,7 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
     # metadata
     n['ds_i'] = i.numpy()
 
-    return [dict(
-        model=trainer.model.config._name_or_path,
-        # arrays
-        **{k:v[i] for k,v in n.items()}
-    ) for i in range(bs)]
+    return n
 
 
 
@@ -102,12 +99,13 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     model = trainer.model
     model.eval()
     model.config.use_cache = False
+    dsname = ds2name(dataset)
 
 
     data = []
     # use hf dpo trainer to tokenizer, and make loader
-    dataset2 = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10)
-    eval_dataloader = trainer.get_eval_dataloader(dataset2)
+    dataset = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10, desc='tokenize')
+    eval_dataloader = trainer.get_eval_dataloader(dataset)
     
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
     
@@ -122,17 +120,18 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
                 for adapter_name in adapter_names:
                     with set_adapter(trainer.model, adapter_name):
                         d = extract_logps(trainer, model, batch, step, **kwargs)
-                        for dd in d:
-                            dd['adapter'] = adapter_name if adapter_name is not None else 'base'
-                            data.append(dd)
+                        d['adapter'] = adapter_name if adapter_name is not None else 'base'
+                        data.append(pd.DataFrame(d))
             else:
-                data += extract_logps(trainer, trainer.model, batch, step, **kwargs)
-    clear_mem()
+                d = extract_logps(trainer, trainer.model, batch, step, **kwargs)
+                data.append(pd.DataFrame(d))
 
-    df = pd.DataFrame(data)
+    df = pd.concat(data)
+
+    # TODO I'd like a robust way to calibrate logprobs so we can get a better signal with a much smaller dataset
     df['correct'] = df['prob'] > 0.5
-
-    df['dataset'] = ds2name(dataset)
+    df['model'] = trainer.model.config._name_or_path,
+    df['dataset'] = dsname
     return df
 
 
@@ -141,6 +140,7 @@ def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, v
     for dataset in tqdm(datasets, disable=not verbose, unit='ds'):
         df = eval_dataset(trainer, dataset, verbose=verbose, **kwargs)
         dfs.append(df)
+        clear_mem()
     df = pd.concat(dfs)
 
     df['model'] = trainer.model.config._name_or_path # Error only has the base model
