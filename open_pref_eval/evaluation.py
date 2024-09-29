@@ -130,7 +130,7 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
 
     # TODO I'd like a robust way to calibrate logprobs so we can get a better signal with a much smaller dataset
     df['correct'] = df['prob'] > 0.5
-    df['model'] = trainer.model.config._name_or_path,
+    df['model'] = trainer.model.config._name_or_path
     df['dataset'] = dsname
     return df
 
