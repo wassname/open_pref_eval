@@ -165,7 +165,8 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, 
     trainer_kwargs = alias_trl_kwargs(trainer_kwargs)
 
     if trainer is None:
-        trainer = get_dummy_trainer(model_kwargs=model_kwargs, **trainer_kwargs)
+        with no_hf_tqdm():
+            trainer = get_dummy_trainer(model_kwargs=model_kwargs, **trainer_kwargs)
 
     df_raw = eval_datasets(datasets, trainer, score_fn=score_fn, verbose=verbose, )
 
