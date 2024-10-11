@@ -3,7 +3,9 @@ from datasets import Dataset, features
 import tempfile
 import torch
 from trl import DPOConfig, DPOTrainer
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any, List, Callable
+import warnings
+from trl.trainer.dpo_trainer import DPODataCollatorWithPadding
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from .helpers.hf_progbar import no_hf_tqdm
 
@@ -79,6 +81,7 @@ class OPEConfig(DPOConfig):
     remove_unused_columns: Optional[bool] = field(
         default=False, metadata={"help": "Remove columns not required by the model when using an nlp.Dataset."}
     )
+    dataloader_pin_memory: bool = True
 
 
 @no_hf_tqdm()
@@ -120,7 +123,41 @@ def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None,
     )
     return trainer
 
+
+
+@dataclass
+class OPEDataCollatorWithPadding(DPODataCollatorWithPadding):
+    tokenizer: Optional[AutoTokenizer] = None
+    tokenize_row: Optional[Callable] = None
+
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # tokenize
+        tokenized_features = [self.tokenize_row(feature) for feature in features]
+        return super().__call__(tokenized_features)
+
+
 class OPETrainer(DPOTrainer):
+
+    def __init__(self, *pargs, args: Optional[DPOConfig] = None, **kwargs):
+        super().__init__(*pargs, args=args, **kwargs)
+
+        # custom data collator that does tokenisation on the fly to save mem
+        self.data_collator = OPEDataCollatorWithPadding(
+                pad_token_id=self.tokenizer.pad_token_id,
+                label_pad_token_id=args.label_pad_token_id,
+                is_encoder_decoder=self.is_encoder_decoder,
+                tokenizer=self.tokenizer,
+                tokenize_row=self.tokenize_row,
+            )
+
+        if args.remove_unused_columns:
+            args.remove_unused_columns = False
+            # warn users
+            warnings.warn(
+                "When using OPEDataCollatorWithPadding, you should set `remove_unused_columns=False` in your TrainingArguments"
+                " we have set it for you, but you should do it yourself in the future.",
+                UserWarning,
+            )
 
     @staticmethod
     def get_batch_logps(
@@ -157,7 +194,7 @@ class OPETrainer(DPOTrainer):
         concatenated_batch = self.concatenated_inputs(
             batch,
             is_encoder_decoder=self.is_encoder_decoder,
-            is_vision_model=self.is_vision_model,
+            # is_vision_model=self.is_vision_model,
             label_pad_token_id=self.label_pad_token_id,
             padding_value=self.padding_value,
             device=self.accelerator.device,
