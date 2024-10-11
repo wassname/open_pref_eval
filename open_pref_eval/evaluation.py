@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 from tqdm.auto import tqdm
 from trl import DPOTrainer
 from typing import Optional, List, Union, Callable
@@ -23,8 +23,8 @@ from .helpers.hf_progbar import no_hf_tqdm
 
 
 
-def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict, step: int, score_fn: Optional[Callable]=score_weighted
-                  ) -> List[dict]:
+def extract_logps(trainer: OPETrainer, model: PreTrainedModel, batch: dict, step: int, score_fn: Callable=score_weighted
+                  ) -> dict:
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
     forward_output = trainer.concatenated_forward(model, batch)
@@ -60,11 +60,7 @@ def extract_logps(trainer: OPETrainer, model: AutoModelForCausalLM, batch: dict,
     n = {k:v.detach().cpu().float().numpy() for k,v in n.items()}
     # metadata
     n['ds_i'] = i.numpy()
-
     return n
-
-
-
 
 @torch.no_grad()
 def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, verbose=1, **kwargs) -> pd.DataFrame:
@@ -77,22 +73,23 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     """
     if isinstance(dataset, str):
         dataset_name, split = dataset.split('#')
-        dataset = load_dataset(dataset_name, split=split, keep_in_memory=False)
+        dataset: Dataset = load_dataset(dataset_name, split=split, keep_in_memory=False)
 
-    model = trainer.model
+    model: PreTrainedModel = trainer.model
     model.eval()
     model.config.use_cache = False
     dsname = ds2name(dataset)
 
-
     data = []
-    # use hf dpo trainer to tokenizer, and make loader
-    with no_hf_tqdm():
-        dataset = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=10, desc='tokenize')
-        eval_dataloader = trainer.get_eval_dataloader(dataset)
+
+    # Note: normally tl.dpo requires pretokenisation, but that would cause memory problems with large datasets so it's been moved to the collator
+    # with no_hf_tqdm():
+        # dataset = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=100, desc='tokenize', keep_in_memory=False)
     
+    eval_dataloader = trainer.get_eval_dataloader(dataset)
+
     compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
-    
+
     with compte_ref_context_manager():
         for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}", disable=verbose<2)):
             batch = trainer._prepare_inputs(batch)
@@ -100,14 +97,14 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
             if is_peft_model(model):
                 # if model has peft adapters loop through them
                 if adapter_names is None:
-                    adapter_names = [None] +list(model.peft_config.keys())
+                    adapter_names: list = [None] +list(model.peft_config.keys())
                 for adapter_name in adapter_names:
                     with set_adapter(trainer.model, adapter_name):
                         d = extract_logps(trainer, model, batch, step, **kwargs)
                         d['adapter'] = adapter_name if adapter_name is not None else 'base'
                         data.append(pd.DataFrame(d))
             else:
-                d = extract_logps(trainer, trainer.model, batch, step, **kwargs)
+                d = extract_logps(trainer, model, batch, step, **kwargs)
                 data.append(pd.DataFrame(d))
 
     df = pd.concat(data)
@@ -119,7 +116,7 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     return df
 
 
-def eval_datasets(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, verbose=1, **kwargs) -> pd.DataFrame:
+def eval_datasets(datasets: List[Dataset], trainer: OPETrainer, verbose=1, **kwargs) -> pd.DataFrame:
     dfs = []
     for dataset in tqdm(datasets, disable=not verbose, unit='dataset'):
         df = eval_dataset(trainer, dataset, verbose=verbose, **kwargs)
@@ -158,20 +155,19 @@ def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, 
 def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
     dfs_raw = []
     for model_name in model_names:
-        df_raw = evaluate_model(datasets=datasets, model_name=model_name, **kwargs)
+        df_raw, _ = evaluate_model(datasets=datasets, model_name=model_name, **kwargs)
         df_raw['model'] = model_name
         clear_mem()
         dfs_raw.append(df_raw)
     df_raw = pd.concat(dfs_raw)
 
     df_agg = df_raw.groupby(['model', 'dataset'], dropna=False)[['correct', 'prob']].mean()
-    
+
     return df_agg, df_raw
 
 
-
 def evaluate(model_names: List[str], datasets: Optional[List[Dataset]]=None, **kwargs):
-    """main class, rename args for clarity"""
+    """main class"""
     if datasets is None:
         datasets = get_default_datasets()
     return evaluate_models(model_names=model_names, datasets=datasets, **kwargs)
