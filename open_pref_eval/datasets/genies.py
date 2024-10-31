@@ -1,6 +1,6 @@
 from datasets import load_dataset
 from . import load_dataset_n
-
+from typing import Optional
 
 GENIES_ALL = [
     {
@@ -317,7 +317,9 @@ GENIES = [
     {"source": "alpaca_mmlu", "target": "reward_seeking", "label": "probing", "category": "unwanted_personas"}
 ]
 
-def dist2datasets(dist, key='target', split='test', source=None, N=None):
+def dist2datasets(dist=GENIES, key:str='target', split:str='test', source:Optional[str]=None, N:Optional[int]=None):
+    """map from data source to a target distribution (or vice versa) from GENIES and load."""
+    # TODO seperate this into find name and load! We don't want to load multiple
     datasets = []
     for row in dist:
         name = row[key]
@@ -327,6 +329,60 @@ def dist2datasets(dist, key='target', split='test', source=None, N=None):
         try:
             ds = load_dataset_n('wassname/genies_preferences', name=name, split=split, N=N)
             datasets.append(ds)
+            return datasets
+        except ValueError:
+            print(f"Dataset {name} not found")
+    
+    for row in GENIES_ALL:
+        name = row[key]
+        if source is not None and row['source'] not in source:
+            continue       
+        
+        try:
+            ds = load_dataset_n('wassname/genies_preferences', name=name, split=split, N=N)
+            datasets.append(ds)
+            return datasets
         except ValueError:
             print(f"Dataset {name} not found")
     return datasets
+
+# def get_unrelated_genies_datasets(name:str, dist=GENIES_ALL):
+#     """get a dataset that is not related to source within dists."""
+#     excluded = [name]
+#     for row in dist:
+#         if (name == row['source']):
+#             excluded.append(row['target'])
+#         if (name == row['target']):
+#             excluded.append(row['target'])
+
+#     for row in dist[::-1]:
+#         if dist['source'] in excluded:
+#             continue
+#         elif dist['target'] in excluded:
+#             continue
+#         else:
+#             yield dist['target']
+
+# def get_an_unrelated_genies_ds(name:str, dist=GENIES_ALL):
+#     unrelated = list(get_unrelated_genies_datasets(name, dist))
+#     assert len(unrelated), f'could not find any datasets unrelated to {name} in GENIES'
+#     return unrelated[0]
+
+# def dist2rnd(dist=GENIES_ALL, name:str, N:Optional[int]=None):
+#     """get a dataset that is not related to source within dists."""
+#     excluded = [name]
+#     for row in dist:
+#         if (name == row['source']):
+#             excluded.append(row['target'])
+#         if (name == row['target']):
+#             excluded.append(row['target'])
+
+#     for row in dist[::-1]:
+#         if dist['source'] in excluded:
+#             continue
+#         elif dist['target'] in excluded:
+#             continue
+#         else:
+#             yield dist['target']
+
+
