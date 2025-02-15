@@ -5,10 +5,52 @@ import torch
 from trl import DPOConfig, DPOTrainer
 from typing import Optional, Tuple, Dict, Any, List, Callable
 import warnings
+from einops import rearrange
+from torch import Tensor
+from jaxtyping import Float
 from trl.trainer.dpo_trainer import DPODataCollatorWithPadding
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from .helpers.hf_progbar import no_hf_tqdm
 
+
+def get_supressed_activations(
+    hs: Float[Tensor, "l b t h"], w_out, w_inv
+) -> Float[Tensor, "l b t h"]:
+    """
+    Novel experiment: Here we define a transform to isolate supressed activations, where we hypothesis that style/concepts/scratchpads and other internal only representations must be stored.
+
+    See the following references for more information:
+
+    - https://arxiv.org/pdf/2401.12181
+        - > Suppression neurons that are similar, except decrease the probability of a group of related tokens
+
+    - https://arxiv.org/html/2406.19384
+        - > Previous work suggests that networks contain ensembles of “prediction" neurons, which act as probability promoters [66, 24, 32] and work in tandem with suppression neurons (Section 5.4).
+
+    - https://arxiv.org/pdf/2401.12181
+        > We find a striking pattern which is remarkably consistent across the different seeds: after about the halfway point in the model, prediction neurons become increasingly prevalent until the very end of the network where there is a sudden shift towards a much larger number of suppression neurons.
+    """
+    with torch.no_grad():
+        # here we pass the hs through the last layer, take a diff, and then project it back to find which activation changes lead to supressed
+        hs2 = rearrange(hs[:, :, -1:], "l b t h -> (l b t) h")
+        hs_out2 = torch.nn.functional.linear(hs2, w_out)
+        hs_out = rearrange(
+            hs_out2, "(l b t) h -> l b t h", l=hs.shape[0], b=hs.shape[1], t=1
+        )
+        diffs = hs_out[:, :, :].diff(dim=0)
+        diffs2 = rearrange(diffs, "l b t h -> (l b t) h")
+        # W_inv = get_cache_inv(w_out)
+
+        diffs_inv2 = torch.nn.functional.linear(diffs2.to(dtype=w_inv.dtype), w_inv)
+        diffs_inv = rearrange(
+            diffs_inv2, "(l b t) h -> l b t h", l=hs.shape[0] - 1, b=hs.shape[1], t=1
+        ).to(w_out.dtype)
+        # TODO just return this?
+        eps = 1.0e-1
+        supressed_mask = (diffs_inv < -eps).to(hs.dtype)
+        # supressed_mask = repeat(supressed_mask, 'l b 1 h -> l b t h', t=hs.shape[2])
+    supressed_act = hs[1:] * supressed_mask
+    return supressed_act
 
 def alias_trl_kwargs(kwargs):
     """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
@@ -186,7 +228,7 @@ class OPETrainer(DPOTrainer):
 
 
     def concatenated_forward(
-        self, model, batch):
+        self, model, batch, model_kwargs = {}):
         """
         We modify this to simply return the logps and mask without reducing them
         """
@@ -199,9 +241,7 @@ class OPETrainer(DPOTrainer):
             padding_value=self.padding_value,
             device=self.accelerator.device,
         )
-        len_chosen = batch["chosen_labels"].shape[0]
-
-        model_kwargs = {}
+        len_chosen = batch["chosen_labels"].shape[0]        
 
         if self.is_encoder_decoder:
             model_kwargs["labels"] = concatenated_batch["concatenated_labels"]
@@ -228,5 +268,25 @@ class OPETrainer(DPOTrainer):
 
         chosen_mask = mask[:len_chosen]
         rejected_mask = mask[len_chosen:]
+        all_logits = outputs.logits
+        chosen_logits = all_logits[:len_chosen]
+        rejected_logits = all_logits[len_chosen:]
 
-        return (chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
+        all_hs = rearrange(list(outputs.hidden_states), "l b t h -> l b t h")
+
+        Wo = model.get_output_embeddings().weight
+        Wo_inv = torch.pinverse(Wo.clone().float()).detach()
+        hs_sup = get_supressed_activations(all_hs, Wo, Wo_inv)
+        hs_sup = rearrange(hs_sup, "l b t h -> b l t h")
+
+        chosen_mask2 = mask[:len_chosen, :, None]
+        rejected_mask2 = mask[len_chosen:, :, None]
+        half_layer = hs_sup.shape[1] // 2
+        chosen_hs = hs_sup[:len_chosen, half_layer:].sum(1) # sum over 2nd half of layers
+        rejected_hs = hs_sup[len_chosen:, half_layer:].sum(1)
+        # mean over tokens [b, t, h]
+        chosen_hs = (chosen_hs[:, 1:] * chosen_mask2).sum(1) / chosen_mask2.sum(1)
+        rejected_hs = (rejected_hs[:, 1:] * rejected_mask2).sum(1) / rejected_mask2.sum(1)
+        # now should be [b, h]
+
+        return (chosen_t_logps, rejected_t_logps, chosen_logits, rejected_logits, chosen_hs, rejected_hs, chosen_mask, rejected_mask)

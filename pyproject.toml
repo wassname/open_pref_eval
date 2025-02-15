@@ -14,6 +14,7 @@ trl = "^0.9.4"
 pandas = "^2.2.0"
 torch = "^2.3.0"
 jaxtyping = "^0.2.19"
+einops = "^0.8.1"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.5"

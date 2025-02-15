@@ -1,7 +1,8 @@
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, concatenate_datasets
 from contextlib import contextmanager, nullcontext
 import pandas as pd
 import torch
+from transformers.utils import is_peft_available, is_torch_xpu_available
 from torch import Tensor
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
@@ -11,14 +12,17 @@ from typing import Optional, List, Union, Callable
 from collections import OrderedDict
 import numpy as np
 from jaxtyping import Float, Int
+import itertools
+from einops import rearrange, reduce, repeat
 
-from .datasets import get_default_datasets, ds2name
+from .datasets import get_default_datasets, ds2name, Dataset
 from .trainer import get_dummy_trainer, OPETrainer, alias_trl_kwargs
 from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
 from .scoring import score_1st_diverg, score_weighted, score_preferences, score_ipo
 from .helpers.hf_progbar import no_hf_tqdm
 from .helpers.calibrate import get_calibrator
+
 
 
 def first_nonzero(x: Float[Tensor, 'b t'], dim=1) -> Float[Tensor, 'b']:
@@ -53,11 +57,16 @@ def calibrate_prob(df: pd.DataFrame, N:Union[bool,int]=False) -> pd.DataFrame:
     df = pd.concat([df_train, df_test])
     return df
 
-def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted):
+
+def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted, include_raw=False):
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
-    forward_output = trainer.concatenated_forward(model, batch)
-    (chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask) = forward_output
+    model.eval()
+    device_type = "xpu" if is_torch_xpu_available() else "cuda"
+    compte_ref_context_manager = torch.amp.autocast(device_type) if trainer._peft_has_been_casted_to_bf16 else nullcontext()
+    with torch.no_grad(), compte_ref_context_manager:
+        forward_output = trainer.concatenated_forward(model, batch, model_kwargs={'output_hidden_states':include_raw})
+    (chosen_t_logps, rejected_t_logps, chosen_logits, rejected_logits, chosen_hs, rejected_hs, chosen_mask, rejected_mask) = forward_output
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
     prob = score_fn(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
@@ -85,14 +94,28 @@ def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted
         # debug: completion length, for checking if the model is biased
         _l_chosen=(batch['chosen_labels']>0).sum(-1),
         _l_rejected=(batch['rejected_labels']>0).sum(-1),
+
+
     )
-    n = {k:v.detach().cpu().float().numpy() for k,v in n.items()}
+    if include_raw:
+        n.update(
+            __chosen_logps=chosen_t_logps,
+            __rejected_logps=rejected_t_logps,
+            __chosen_logits=chosen_logits,
+            __rejected_logits=rejected_logits,
+            __chosen_hs=chosen_hs,
+            __rejected_hs=rejected_hs,
+            __chosen_mask=chosen_mask,
+            __rejected_mask=rejected_mask
+        )
+        clear_mem()
+    n = {k:v.detach().cpu() for k,v in n.items()}
     # metadata
     n['ds_i'] = i.numpy()
     return n
 
 @torch.no_grad()
-def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, verbose=1, **kwargs) -> pd.DataFrame:
+def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names:Optional[List[str]]= None, verbose=1, calibrate=False, **kwargs) -> pd.DataFrame:
     """
     We eval the prob_chosen/prob_rejected for each sample in the dataset (per token)
 
@@ -117,53 +140,62 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     
     eval_dataloader = trainer.get_eval_dataloader(dataset)
 
-    compte_ref_context_manager = torch.cuda.amp.autocast if trainer._peft_has_been_casted_to_bf16 else nullcontext
+    for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}", disable=verbose<2)):
+        batch = trainer._prepare_inputs(batch)
 
-    with compte_ref_context_manager():
-        for step, batch in enumerate(tqdm(eval_dataloader, desc=f"Eval {ds2name(dataset)}", disable=verbose<2)):
-            batch = trainer._prepare_inputs(batch)
+        if is_peft_model(model):
+            # if model has peft adapters loop through them
+            if adapter_names is None:
+                adapter_names: list = [None] +list(model.peft_config.keys())
+            for adapter_name in adapter_names:
+                with set_adapter(trainer.model, adapter_name):
+                    d = extract_logps(trainer, model, batch, step, **kwargs)
+                    d['adapter'] = adapter_name if adapter_name is not None else 'base'
+                    data.append(d)
+        else:
+            d = extract_logps(trainer, model, batch, step, **kwargs)
+            data.append(d)
 
-            if is_peft_model(model):
-                # if model has peft adapters loop through them
-                if adapter_names is None:
-                    adapter_names: list = [None] +list(model.peft_config.keys())
-                for adapter_name in adapter_names:
-                    with set_adapter(trainer.model, adapter_name):
-                        d = extract_logps(trainer, model, batch, step, **kwargs)
-                        d['adapter'] = adapter_name if adapter_name is not None else 'base'
-                        data.append(pd.DataFrame(d))
-            else:
-                d = extract_logps(trainer, model, batch, step, **kwargs)
-                data.append(pd.DataFrame(d))
-
-    df = pd.concat(data)
+    # so here we have a list of dict of lists. We want concat each key to get a dict of lists
+    keys = data[0].keys()
+    data = {k: itertools.chain(*[d[k] for d in data]) for k in keys}
+    df = Dataset.from_dict(data)
+    # df = pd.concat(data)
 
     # TODO I'd like a robust way to calibrate logprobs so we can get a better signal with a much smaller dataset
     df['correct'] = df['prob'] > 0.5
     df['model'] = trainer.model.config._name_or_path
     df['dataset'] = dsname
+
+
+    if calibrate is not False:
+        df = calibrate_prob(df, N=False)
     return df
 
 
-def eval_datasets(datasets: List[Dataset], trainer: OPETrainer, verbose=1, **kwargs) -> pd.DataFrame:
+def eval_datasets(datasets: List[Dataset], trainer: OPETrainer, verbose=1, calibrate=False, **kwargs) -> pd.DataFrame:
     dfs = []
     for dataset in tqdm(datasets, disable=not verbose, unit='dataset'):
-        df = eval_dataset(trainer, dataset, verbose=verbose, **kwargs)
+        df = eval_dataset(trainer, dataset, verbose=verbose, calibrate=False, **kwargs)
         dfs.append(df)
         clear_mem()
     df = pd.concat(dfs)
 
+    # if we are doing multiple datasets, let override the calibration
+    if calibrate:
+        df = calibrate_prob(df, N=calibrate)
+
     df['model'] = trainer.model.config._name_or_path # Error only has the base model
     return df
 
-def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=score_weighted, verbose=1, **trainer_kwargs):
+def evaluate_model(datasets: List[Dataset], trainer: Optional[OPETrainer]=None, model_kwargs={}, score_fn=score_weighted, verbose=1, calibrate=False, eval_kwargs={}, **trainer_kwargs, ) -> pd.DataFrame:
     trainer_kwargs = alias_trl_kwargs(trainer_kwargs)
 
     if trainer is None:
         with no_hf_tqdm():
             trainer = get_dummy_trainer(model_kwargs=model_kwargs, **trainer_kwargs)
 
-    df_raw = eval_datasets(datasets, trainer, score_fn=score_fn, verbose=verbose, )
+    df_raw = eval_datasets(datasets, trainer, score_fn=score_fn, verbose=verbose, calibrate=calibrate, **eval_kwargs)
 
     # reorder df cols
     cols = ['model', 'dataset', 'ds_i', 'correct', 'prob']
@@ -188,7 +220,10 @@ def evaluate_models(datasets: List[Dataset], model_names: List[str], **kwargs):
         df_raw['model'] = model_name
         clear_mem()
         dfs_raw.append(df_raw)
-    df_raw = pd.concat(dfs_raw)
+    df_raw = concatenate_datasets(dfs_raw)
+    
+    df_raw = df_raw.select_columns(['model', 'dataset', 'ds_i', 'correct', 'prob']).to_pandas()
+    #.to_pandas()
 
     df_agg = df_raw.groupby(['model', 'dataset'], dropna=False)[['correct', 'prob']].mean()
 
