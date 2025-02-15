@@ -8,12 +8,15 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-transformers = "^4.43.2"
+transformers = "4.45.1"
 datasets = "^2.20.0"
 trl = "^0.9.4"
 pandas = "^2.2.0"
 torch = "^2.3.0"
 jaxtyping = "^0.2.19"
+laplace-torch = "^0.2.1"
+accelerate = "^1.0.1"
+peft = "^0.13.2"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^6.29.5"
