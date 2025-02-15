@@ -18,9 +18,12 @@ from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
 from .scoring import score_1st_diverg, score_weighted, score_preferences, score_ipo
 from .helpers.hf_progbar import no_hf_tqdm
+from .helpers.calibrate import get_calibrator
 
 
-
+def first_nonzero(x: Float[Tensor, 'b t'], dim=1) -> Float[Tensor, 'b']:
+    """get the first non zero element in a tensor"""
+    return x[torch.arange(x.shape[0]), (x != 0).float().argmax(dim=dim)]
 
 
 def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
@@ -50,7 +53,7 @@ def calibrate_prob(df: pd.DataFrame, N:Union[bool,int]=False) -> pd.DataFrame:
     df = pd.concat([df_train, df_test])
     return df
 
-def extract_logps(trainer, model, batch, step):
+def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted):
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
     forward_output = trainer.concatenated_forward(model, batch)
