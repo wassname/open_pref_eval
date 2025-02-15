@@ -23,8 +23,34 @@ from .helpers.hf_progbar import no_hf_tqdm
 
 
 
-def extract_logps(trainer: OPETrainer, model: PreTrainedModel, batch: dict, step: int, score_fn: Callable=score_weighted
-                  ) -> dict:
+def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
+    """
+    calculate if the chosen completion is higher than the rejected, using first divering token
+
+    return uncalibrated probability
+    """
+    m = mask_c * mask_r
+    logratio = (logp_c - logp_r) * m
+    return torch.sigmoid(first_nonzero(logratio))
+
+def calibrate_prob(df: pd.DataFrame, N:Union[bool,int]=False) -> pd.DataFrame:
+    if N is False:
+        N = 50
+    
+    df_train = df.iloc[:N].copy()
+    df_test = df.iloc[N:].copy()
+    calib = get_calibrator(df_train['prob'].values)
+    if hasattr(calib, 'predict_proba'):
+        df_test['prob_calib'] = calib.predict_proba(df_test['prob'].values)[:,1]
+    else:
+        df_test['prob_calib'] = calib.predict(df_test['prob'].values)
+    
+    # prevent data leakage
+    df_train['prob_calib'] = np.nan
+    df = pd.concat([df_train, df_test])
+    return df
+
+def extract_logps(trainer, model, batch, step):
     bs = batch['chosen_input_ids'].shape[0]
     i = bs * step + torch.arange(bs)
     forward_output = trainer.concatenated_forward(model, batch)
