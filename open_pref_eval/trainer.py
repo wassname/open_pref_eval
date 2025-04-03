@@ -143,10 +143,10 @@ class OPETrainer(DPOTrainer):
 
         # custom data collator that does tokenisation on the fly to save mem
         self.data_collator = OPEDataCollatorWithPadding(
-                pad_token_id=self.tokenizer.pad_token_id,
+                pad_token_id=self.processing_class.pad_token_id,
                 label_pad_token_id=args.label_pad_token_id,
                 is_encoder_decoder=self.is_encoder_decoder,
-                tokenizer=self.tokenizer,
+                tokenizer=self.processing_class,
                 tokenize_row=self.tokenize_row,
             )
 

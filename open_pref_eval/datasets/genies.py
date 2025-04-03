@@ -314,7 +314,10 @@ GENIES = [
     {"source": "alpaca_mmlu", "target": "truthful_qa", "label": "probing", "category": "unwanted_personas"},
     {"source": "alpaca_mmlu", "target": "sycophancy_mimicry", "target_reference": "quote_attribution", "label": "probing", "category": "unwanted_personas"},
     {"source": "alpaca_mmlu", "target": "survival_influence", "label": "probing", "category": "unwanted_personas"},
-    {"source": "alpaca_mmlu", "target": "reward_seeking", "label": "probing", "category": "unwanted_personas"}
+    {"source": "alpaca_mmlu", "target": "reward_seeking", "label": "probing", "category": "unwanted_personas"},
+
+    # extra
+    {"source": "unhelpful_alpaca", "target": "illegal_dont_help"},
 ]
 
 def dist2datasets(dist=GENIES, key:str='target', split:str='test', source:Optional[str]=None, N:Optional[int]=None):
@@ -331,7 +334,7 @@ def dist2datasets(dist=GENIES, key:str='target', split:str='test', source:Option
             datasets.append(ds)
             return datasets
         except ValueError:
-            print(f"Dataset {name} not found")
+            print(f"Dataset {name} not found in `wassname/genies_preferences`")
     
     for row in GENIES_ALL:
         name = row[key]
@@ -343,7 +346,7 @@ def dist2datasets(dist=GENIES, key:str='target', split:str='test', source:Option
             datasets.append(ds)
             return datasets
         except ValueError:
-            print(f"Dataset {name} not found")
+            print(f"Dataset {name} not found in GENIES")
     return datasets
 
 # def get_unrelated_genies_datasets(name:str, dist=GENIES_ALL):
