@@ -111,7 +111,7 @@ def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted
         clear_mem()
     n = {k:v.detach().cpu() for k,v in n.items()}
     # metadata
-    n['ds_i'] = i.numpy()
+    n['ds_i'] = i.cpu()
     return n
 
 @torch.no_grad()
