@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
   "transformers[torch]>=4.43.2",
   "datasets>=3.3",
-  "trl>=0.12",
+  "trl>=0.17",
   "pandas>=2.2",
   "torch>=2.3",
   "jaxtyping>=0.2",

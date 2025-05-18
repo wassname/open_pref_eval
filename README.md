@@ -25,7 +25,7 @@ chosen_probs[1]>rejected_probs[1] # True
 This has the advantages of
 - Re-using preference datasets
 - Not needing a judge
-- Giving highly informatives returns (we can get uncalibrated probabilities for each token or accuracy)
+- Giving highly informative returns (we can get uncalibrated probabilities for each token or accuracy)
 - Being hackable by reusing popular huggingface libraries like transformers
   
 ## Quickstart
@@ -64,9 +64,10 @@ See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
   - [x] push mmlu and ethics to huggingface and commit gen notebooks
 - [x] improve radar plot
 - [x] look at the best way to extract probs (ipo, dpo, first diverging token, brier score, calbirated probs etc)
-  - [ ] change to first div token
-  - [ ] add option to calibrate
-- [ ] GENIES generalisation datasets
+  - [x] filter out attentio mask
+  - [ ] filter out attention sinks? special tokens? 
+  - [ ] ~~add option to calibrate~~ doesn't work
+- [x] GENIES generalisation datasets
 
 
 ## FAQ

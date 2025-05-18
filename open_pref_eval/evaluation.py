@@ -65,8 +65,14 @@ def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted
     device_type = "xpu" if is_torch_xpu_available() else "cuda"
     compte_ref_context_manager = torch.amp.autocast(device_type) if trainer._peft_has_been_casted_to_bf16 else nullcontext()
     with torch.no_grad(), compte_ref_context_manager:
-        forward_output = trainer.concatenated_forward(model, batch, model_kwargs={'output_hidden_states':include_raw})
-    (chosen_t_logps, rejected_t_logps, chosen_logits, rejected_logits, chosen_hs, rejected_hs, chosen_mask, rejected_mask) = forward_output
+        forward_output = trainer.concatenated_forward(model, batch)
+
+    chosen_t_logps= forward_output["chosen_logps"]
+    rejected_t_logps= forward_output["rejected_logps"]
+    chosen_logits= forward_output["mean_chosen_logits"]
+    rejected_logits= forward_output["mean_rejected_logits"]
+    chosen_mask = forward_output["chosen_mask"]
+    rejected_mask = forward_output["rejected_mask"]
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
     prob = score_fn(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
@@ -92,8 +98,8 @@ def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted
         _rejected_ppl=rejected_ppl,
 
         # debug: completion length, for checking if the model is biased
-        _l_chosen=(batch['chosen_labels']>0).sum(-1),
-        _l_rejected=(batch['rejected_labels']>0).sum(-1),
+        _l_chosen=(batch['chosen_input_ids']>0).sum(-1),
+        _l_rejected=(batch['rejected_input_ids']>0).sum(-1),
 
 
     )
@@ -103,8 +109,8 @@ def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted
             __rejected_logps=rejected_t_logps,
             __chosen_logits=chosen_logits,
             __rejected_logits=rejected_logits,
-            __chosen_hs=chosen_hs,
-            __rejected_hs=rejected_hs,
+            # __chosen_hs=chosen_hs,
+            # __rejected_hs=rejected_hs,
             __chosen_mask=chosen_mask,
             __rejected_mask=rejected_mask
         )

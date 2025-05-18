@@ -1510,7 +1510,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.3" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", extras = ["torch"], specifier = ">=4.43.2" },
-    { name = "trl", specifier = ">=0.12" },
+    { name = "trl", specifier = ">=0.17" },
 ]
 
 [package.metadata.requires-dev]

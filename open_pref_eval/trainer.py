@@ -3,54 +3,19 @@ from datasets import Dataset, features
 import tempfile
 import torch
 from trl import DPOConfig, DPOTrainer
-from typing import Optional, Tuple, Dict, Any, List, Callable
+from typing import Optional, Tuple, Dict, Any, List, Callable, Union
+import torch.nn as nn
+import torch.nn.functional as F
 import warnings
 from einops import rearrange
 from torch import Tensor
 from jaxtyping import Float
-from trl.trainer.utils import DPODataCollatorWithPadding
+from functools import partial
+from trl.trainer.dpo_trainer import DataCollatorForPreference
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from trl.trainer.utils import selective_log_softmax, flush_left
 from .helpers.hf_progbar import no_hf_tqdm
 
-
-def get_supressed_activations(
-    hs: Float[Tensor, "l b t h"], w_out, w_inv
-) -> Float[Tensor, "l b t h"]:
-    """
-    Novel experiment: Here we define a transform to isolate supressed activations, where we hypothesis that style/concepts/scratchpads and other internal only representations must be stored.
-
-    See the following references for more information:
-
-    - https://arxiv.org/pdf/2401.12181
-        - > Suppression neurons that are similar, except decrease the probability of a group of related tokens
-
-    - https://arxiv.org/html/2406.19384
-        - > Previous work suggests that networks contain ensembles of “prediction" neurons, which act as probability promoters [66, 24, 32] and work in tandem with suppression neurons (Section 5.4).
-
-    - https://arxiv.org/pdf/2401.12181
-        > We find a striking pattern which is remarkably consistent across the different seeds: after about the halfway point in the model, prediction neurons become increasingly prevalent until the very end of the network where there is a sudden shift towards a much larger number of suppression neurons.
-    """
-    with torch.no_grad():
-        # here we pass the hs through the last layer, take a diff, and then project it back to find which activation changes lead to supressed
-        hs2 = rearrange(hs[:, :, -1:], "l b t h -> (l b t) h")
-        hs_out2 = torch.nn.functional.linear(hs2, w_out)
-        hs_out = rearrange(
-            hs_out2, "(l b t) h -> l b t h", l=hs.shape[0], b=hs.shape[1], t=1
-        )
-        diffs = hs_out[:, :, :].diff(dim=0)
-        diffs2 = rearrange(diffs, "l b t h -> (l b t) h")
-        # W_inv = get_cache_inv(w_out)
-
-        diffs_inv2 = torch.nn.functional.linear(diffs2.to(dtype=w_inv.dtype), w_inv)
-        diffs_inv = rearrange(
-            diffs_inv2, "(l b t) h -> l b t h", l=hs.shape[0] - 1, b=hs.shape[1], t=1
-        ).to(w_out.dtype)
-        # TODO just return this?
-        eps = 1.0e-1
-        supressed_mask = (diffs_inv < -eps).to(hs.dtype)
-        # supressed_mask = repeat(supressed_mask, 'l b 1 h -> l b t h', t=hs.shape[2])
-    supressed_act = hs[1:] * supressed_mask
-    return supressed_act
 
 def alias_trl_kwargs(kwargs):
     """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
@@ -125,6 +90,8 @@ class OPEConfig(DPOConfig):
     )
     dataloader_pin_memory: bool = True
 
+    use_weighting: bool = True
+
 
 @no_hf_tqdm()
 def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None, per_device_eval_batch_size=8, model_kwargs={}, **kwargs):
@@ -168,14 +135,13 @@ def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None,
 
 
 @dataclass
-class OPEDataCollatorWithPadding(DPODataCollatorWithPadding):
-    # TODO should I replace with DataCollatorForPreference
-    tokenizer: Optional[AutoTokenizer] = None
+class OPEDataCollatorWithPadding(DataCollatorForPreference):
     tokenize_row: Optional[Callable] = None
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # tokenize
-        tokenized_features = [self.tokenize_row(feature, tokenizer, max_prompt_length, max_completion_length, add_special_tokens) for feature in features]
+        # tokenize each row, this does not add special tokens or mask
+        tokenized_features = [self.tokenize_row(feature) for feature in features]
+        # then collate normally, this adds mask
         return super().__call__(tokenized_features)
 
 
@@ -185,12 +151,13 @@ class OPETrainer(DPOTrainer):
         super().__init__(*pargs, args=args, **kwargs)
 
         # custom data collator that does tokenisation on the fly to save mem
+        # see usage https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L554
         self.data_collator = OPEDataCollatorWithPadding(
                 pad_token_id=self.processing_class.pad_token_id,
-                label_pad_token_id=args.label_pad_token_id,
-                is_encoder_decoder=self.is_encoder_decoder,
-                tokenizer=self.processing_class,
-                tokenize_row=self.tokenize_row,
+                # label_pad_token_id=args.label_pad_token_id,
+                # is_encoder_decoder=self.is_encoder_decoder,
+                # tokenizer=self.processing_class,
+                tokenize_row=partial(self.tokenize_row, processing_class=self.processing_class, max_prompt_length=args.max_prompt_length, max_completion_length=args.max_length - args.max_prompt_length, add_special_tokens=False),
             )
 
         if args.remove_unused_columns:
@@ -226,68 +193,234 @@ class OPETrainer(DPOTrainer):
         per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
         return per_token_logps, loss_mask
+    
+    # @staticmethod
+    # def tokenize_row(batch, processing_class, max_prompt_length, max_completion_length, add_special_tokens):
+    #     """for some reason TRL changed the class to not return the mask... I should move away from TRL it's too complex."""
 
+    #     tokenizer = processing_class
+    #     chosen_tokens = tokenizer(
+    #         features["chosen"], truncation=True, max_length=max_completion_length, add_special_tokens=False, truncate_side="right"
+    #     )
+    #     rejected_tokens = tokenizer(
+    #         features["rejected"], truncation=True, max_length=max_completion_length, add_special_tokens=False, truncate_side="right"
+    #     )
+    #     prompt_tokens = tokenizer(
+    #         features["prompt"], truncation=True, max_length=max_prompt_length, add_special_tokens=False, truncate_side="left"
+    #     )
 
-    def concatenated_forward(
-        self, model, batch, model_kwargs = {}):
+    #     batch["chosen_input_ids"] = chosen_tokens["input_ids"]
+    #     batch["rejected_input_ids"] = rejected_tokens["input_ids"]
+    #     batch["prompt_input_ids"] = prompt_tokens["input_ids"]
+    #     batch["prompt_attention_mask"] = prompt_tokens["attention_mask"]
+    #     batch["chosen_attention_mask"] = chosen_tokens["attention_mask"]
+    #     batch["rejected_attention_mask"] = rejected_tokens["attention_mask"]
+    #     return batch
+
+    # def concatenated_forward(
+    #     self, model, batch, model_kwargs = {}):
+    #     """
+    #     We modify this to simply return the logps and mask without reducing them
+    #     """
+
+    #     concatenated_batch = self.concatenated_inputs(
+    #         batch,
+    #         padding_value=self.padding_value,
+    #     )
+    #     len_chosen = batch["concatenated_input_ids"].shape[0]        
+
+    #     if self.is_encoder_decoder:
+    #         model_kwargs["labels"] = concatenated_batch["concatenated_labels"]
+    #         model_kwargs["decoder_input_ids"] = concatenated_batch.pop("concatenated_decoder_input_ids", None)
+
+    #     outputs = model(
+    #         concatenated_batch["concatenated_input_ids"],
+    #         attention_mask=concatenated_batch["concatenated_attention_mask"],
+    #         use_cache=False,
+    #         **model_kwargs,
+    #     )
+    #     all_logits = outputs.logits
+
+    #     per_token_logps, mask = self.get_batch_logps(
+    #         all_logits,
+    #         concatenated_batch["concatenated_labels"],
+    #         # average_log_prob=self.loss_type == "ipo",
+    #         is_encoder_decoder=self.is_encoder_decoder,
+    #         label_pad_token_id=self.label_pad_token_id,
+    #     )
+
+    #     chosen_t_logps = per_token_logps[:len_chosen]
+    #     rejected_t_logps = per_token_logps[len_chosen:]
+
+    #     chosen_mask = mask[:len_chosen]
+    #     rejected_mask = mask[len_chosen:]
+
+    #     return (chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
+    
+
+    def concatenated_forward(self, model: nn.Module, batch: dict[str, Union[list, torch.LongTensor]]):
+        """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
+
+        We do this to avoid doing two forward passes, because it's faster for FSDP.
         """
-        We modify this to simply return the logps and mask without reducing them
-        """
+        num_examples = batch["prompt_input_ids"].shape[0]
 
-        concatenated_batch = self.concatenated_inputs(
-            batch,
-            is_encoder_decoder=self.is_encoder_decoder,
-            # is_vision_model=self.is_vision_model,
-            label_pad_token_id=self.label_pad_token_id,
-            padding_value=self.padding_value,
-            device=self.accelerator.device,
-        )
-        len_chosen = batch["chosen_labels"].shape[0]        
+        concatenated_batch = self.concatenated_inputs(batch, padding_value=self.padding_value)
 
-        if self.is_encoder_decoder:
-            model_kwargs["labels"] = concatenated_batch["concatenated_labels"]
-            model_kwargs["decoder_input_ids"] = concatenated_batch.pop("concatenated_decoder_input_ids", None)
+        model_kwargs = {"use_cache": False}
+        if self.aux_loss_enabled:
+            model_kwargs["output_router_logits"] = True
 
-        outputs = model(
-            concatenated_batch["concatenated_input_ids"],
-            attention_mask=concatenated_batch["concatenated_attention_mask"],
-            use_cache=False,
-            **model_kwargs,
-        )
-        all_logits = outputs.logits
+        # Add the pixel values and attention masks for vision models
+        if "pixel_values" in concatenated_batch:
+            model_kwargs["pixel_values"] = concatenated_batch["pixel_values"]
+        if "pixel_attention_mask" in concatenated_batch:
+            model_kwargs["pixel_attention_mask"] = concatenated_batch["pixel_attention_mask"]
+        if "image_sizes" in concatenated_batch:
+            model_kwargs["image_sizes"] = concatenated_batch["image_sizes"]
 
-        per_token_logps, mask = self.get_batch_logps(
-            all_logits,
-            concatenated_batch["concatenated_labels"],
-            # average_log_prob=self.loss_type == "ipo",
-            is_encoder_decoder=self.is_encoder_decoder,
-            label_pad_token_id=self.label_pad_token_id,
+        prompt_input_ids = concatenated_batch["prompt_input_ids"]
+        prompt_attention_mask = concatenated_batch["prompt_attention_mask"]
+        completion_input_ids = concatenated_batch["completion_input_ids"]
+        completion_attention_mask = concatenated_batch["completion_attention_mask"]
+
+        # Concatenate the prompt and completion inputs
+        input_ids = torch.cat((prompt_input_ids, completion_input_ids), dim=1)
+        attention_mask = torch.cat((prompt_attention_mask, completion_attention_mask), dim=1)
+        # Mask the prompt but not the completion for the loss
+        loss_mask = torch.cat(
+            (torch.zeros_like(prompt_attention_mask), completion_attention_mask),
+            dim=1,
         )
 
-        chosen_t_logps = per_token_logps[:len_chosen]
-        rejected_t_logps = per_token_logps[len_chosen:]
+        # Flush left to reduce the memory usage
+        # [[0, 0, x, x, x, x],  ->  [[x, x, x, x],
+        #  [0, x, x, x, 0, 0]]       [x, x, x, 0]]
+        attention_mask, input_ids, loss_mask = flush_left(attention_mask, input_ids, loss_mask)
 
-        chosen_mask = mask[:len_chosen]
-        rejected_mask = mask[len_chosen:]
-        all_logits = outputs.logits
-        chosen_logits = all_logits[:len_chosen]
-        rejected_logits = all_logits[len_chosen:]
+        # Truncate right
+        if self.max_length is not None:
+            if self.truncation_mode == "keep_end":
+                input_ids = input_ids[:, -self.max_length :]
+                attention_mask = attention_mask[:, -self.max_length :]
+                loss_mask = loss_mask[:, -self.max_length :]
+            elif self.truncation_mode == "keep_start":
+                input_ids = input_ids[:, : self.max_length]
+                attention_mask = attention_mask[:, : self.max_length]
+                loss_mask = loss_mask[:, : self.max_length]
+            else:
+                raise ValueError(
+                    f"Unknown truncation mode: '{self.truncation_mode}'. Should be one of ['keep_end', "
+                    "'keep_start']."
+                )
 
-        all_hs = rearrange(list(outputs.hidden_states), "l b t h -> l b t h")
+        if self.use_logits_to_keep:
+            # Compute logits_to_keep based on loss_mask pattern:
+            # [[0, 0, 0, x, x, x, x],
+            #  [0, 0, 0, x, x, x, 0]]
+            #         ^ start computing logits from here ([:, -(7-3+1):])
+            first_compute_index = loss_mask.nonzero(as_tuple=True)[1].min()
+            logits_to_keep = (loss_mask.shape[1] - first_compute_index).item() + 1  # +1 for the first label
+            model_kwargs["logits_to_keep"] = logits_to_keep
 
-        Wo = model.get_output_embeddings().weight
-        Wo_inv = torch.pinverse(Wo.clone().float()).detach()
-        hs_sup = get_supressed_activations(all_hs, Wo, Wo_inv)
-        hs_sup = rearrange(hs_sup, "l b t h -> b l t h")
+        if self.padding_free:
+            # Flatten the input_ids, position_ids, and loss_mask
+            # input_ids = [[a, b, c, 0], ->     input_ids = [[a, b, c, d, e, f, g]]
+            #              [d, e, f, g]]     position_ids = [[0, 1, 2, 0, 1, 2, 3]]
+            input_ids = input_ids[attention_mask.bool()].unsqueeze(0)
+            loss_mask = loss_mask[attention_mask.bool()].unsqueeze(0)
+            position_ids = attention_mask.cumsum(1)[attention_mask.bool()].unsqueeze(0) - 1
+            model_kwargs["position_ids"] = position_ids
+        else:
+            model_kwargs["attention_mask"] = attention_mask
 
-        chosen_mask2 = mask[:len_chosen, :, None]
-        rejected_mask2 = mask[len_chosen:, :, None]
-        half_layer = hs_sup.shape[1] // 2
-        chosen_hs = hs_sup[:len_chosen, half_layer:].sum(1) # sum over 2nd half of layers
-        rejected_hs = hs_sup[len_chosen:, half_layer:].sum(1)
-        # mean over tokens [b, t, h]
-        chosen_hs = (chosen_hs[:, 1:] * chosen_mask2).sum(1) / chosen_mask2.sum(1)
-        rejected_hs = (rejected_hs[:, 1:] * rejected_mask2).sum(1) / rejected_mask2.sum(1)
-        # now should be [b, h]
+        outputs = model(input_ids, **model_kwargs)
+        logits = outputs.logits
 
-        return (chosen_t_logps, rejected_t_logps, chosen_logits, rejected_logits, chosen_hs, rejected_hs, chosen_mask, rejected_mask)
+        # Offset the logits by one to align with the labels
+        labels = torch.roll(input_ids, shifts=-1, dims=1)
+        loss_mask = torch.roll(loss_mask, shifts=-1, dims=1).bool()
+
+        if self.use_logits_to_keep:
+            # Align labels with logits
+            # logits:    -,  -, [x2, x3, x4, x5, x6]
+            #                     ^ --------- ^       after logits[:, :-1, :]
+            # labels:   [y0, y1, y2, y3, y4, y5, y6]
+            #                         ^ --------- ^   with logits_to_keep=4, [:, -4:]
+            # loss_mask: [0,  0,  0,  1,  1,  1,  1]
+            labels = labels[:, -logits_to_keep:]
+            loss_mask = loss_mask[:, -logits_to_keep:]
+
+        if logits.shape[:2] != labels.shape[:2]:
+            # for llava, the returned logits include the image tokens (placed before the text tokens)
+            seq_len = labels.shape[1]
+            logits = logits[:, -seq_len:]
+
+        # Compute the log probabilities of the labels
+        labels[~loss_mask] = 0  # dummy token; we'll ignore the losses on these tokens later
+        per_token_logps = selective_log_softmax(logits, labels)
+        per_token_logps[~loss_mask] = 0
+        per_token_logps = torch.roll(per_token_logps, shifts=1, dims=1)
+
+        if self.padding_free:
+            # Unflatten the per_token_logps (shape: [1, sum_seq_len] -> [batch_size, seq_len])
+            batch_size, seq_len = attention_mask.shape
+            per_token_logps_ = torch.zeros(
+                batch_size, seq_len, device=outputs.logits.device, dtype=outputs.logits.dtype
+            )
+            per_token_logps_[attention_mask.bool()] = per_token_logps
+            per_token_logps = per_token_logps_
+
+        all_logps = per_token_logps.sum(-1)
+
+        output = {}
+
+        if self.use_weighting:
+            with torch.no_grad():
+                # Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
+                logprobs = F.log_softmax(logits, dim=-1)
+                weights_adjustment_factor = torch.logsumexp(2 * logprobs, dim=-1)  # same as sum(probs**2) in log space
+                per_token_logps_adjusted = per_token_logps - weights_adjustment_factor
+                all_weights = (per_token_logps_adjusted * loss_mask).sum(-1) / loss_mask.sum(-1)
+                chosen_weights = all_weights[:num_examples]
+                rejected_weights = all_weights[num_examples:]
+                output["policy_weights"] = torch.clamp(torch.exp(chosen_weights + rejected_weights), max=1)
+
+        if self.args.rpo_alpha is not None:
+            # Only use the chosen logits for the RPO loss
+            chosen_logits = logits[:num_examples]
+            chosen_labels = labels[:num_examples]
+
+            # Compute the log probabilities of the labels
+            output["nll_loss"] = F.cross_entropy(
+                torch.flatten(chosen_logits, end_dim=1), torch.flatten(chosen_labels, end_dim=1), ignore_index=0
+            )
+
+        if self.loss_type == "ipo":
+            all_logps = all_logps / loss_mask.sum(-1)
+
+        output["chosen_logps"] = per_token_logps[:num_examples]
+        output["rejected_logps"] = per_token_logps[num_examples:]
+
+        # Compute the mean logits
+        if self.padding_free:
+            # position_ids contains a sequence of range identifiers (e.g., [[0, 1, 2, 0, 1, 2, 3, ...]]).
+            # There are 2*num_examples ranges in total: the first half corresponds to the chosen tokens,
+            # and the second half to the rejected tokens.
+            # To find the start of the rejected tokens, we look for the num_examples+1-th zero in pos_id.
+            split_idx = (position_ids == 0).nonzero(as_tuple=True)[1][num_examples]
+            mean_chosen_logits = logits[0, :split_idx][loss_mask[0, :split_idx]].mean()
+            mean_rejected_logits = logits[0, split_idx:][loss_mask[0, split_idx:]].mean()
+        else:
+            mean_chosen_logits = logits[:num_examples][loss_mask[:num_examples]].mean()
+            mean_rejected_logits = logits[num_examples:][loss_mask[num_examples:]].mean()
+
+        output["mean_chosen_logits"] = mean_chosen_logits
+        output["mean_rejected_logits"] = mean_rejected_logits
+        output["chosen_mask"] = loss_mask[:num_examples]
+        output["rejected_mask"] = loss_mask[num_examples:]
+
+        if self.aux_loss_enabled:
+            output["aux_loss"] = outputs.aux_loss
+
+        return output
