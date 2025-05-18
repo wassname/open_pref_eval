@@ -43,8 +43,9 @@ print(results)
 
 Output:
 
+TOTO add minutes
 
-| dataset            |   correct |   prob |   n | model   |
+| dataset            |   acc     |   prob |   n | model   |
 |:-------------------|----------:|-------:|----:|:--------|
 | help_steer2-dpo    |      0.39 |  0.486 | 200 | gpt2    |
 | toxic-dpo-v0.2     |      1    |  0.715 | 200 | gpt2    |
@@ -68,7 +69,12 @@ See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
   - [ ] filter out attention sinks? special tokens? 
   - [ ] ~~add option to calibrate~~ doesn't work
 - [x] GENIES generalisation datasets
-
+TODO
+- try WPO https://arxiv.org/html/2406.11827v2
+- adapt to new TRL
+- abandon TRL and just make a very simple, like the 
+  - https://github.com/Eclectic-Sheep/sheeprlhf/blob/efa765089c3cce1e40c5f9a39fa7d43e002738b6/sheeprlhf/loss/dpo.py#L21
+  - https://github.com/eric-mitchell/direct-preference-optimization
 
 ## FAQ
 

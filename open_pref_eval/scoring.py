@@ -83,8 +83,8 @@ def score_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], m
     r_w = norm(rr)
 
     # weighted mean
-    cs = (c * c_w).sum(-1) / c_w.sum(-1)
-    rs = (r * r_w).sum(-1) / r_w.sum(-1)
+    cs = (c * c_w).sum(-1) / (c_w.sum(-1) + eps)
+    rs = (r * r_w).sum(-1) / (r_w.sum(-1) + eps)
 
     # and the ratio in logspace
     logratio = cs - rs
@@ -112,8 +112,8 @@ def score_weighted_prob(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t
     cum_p_r = norm(cum_p_r) * mask_r
 
     # Calculate weighted sum
-    cs = torch.sum(p_c * cum_p_c, dim=1) / cum_p_c.sum(-1)
-    rs = torch.sum(p_r * cum_p_r, dim=1) / cum_p_r.sum(-1)
+    cs = torch.sum(p_c * cum_p_c, dim=1) / (cum_p_c.sum(-1) + eps)
+    rs = torch.sum(p_r * cum_p_r, dim=1) / (cum_p_r.sum(-1) + eps)
 
     # return uncalibrated probability
     return cs / (cs + rs + eps)

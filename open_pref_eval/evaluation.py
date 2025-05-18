@@ -40,6 +40,18 @@ def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'],
     logratio = (logp_c - logp_r) * m
     return torch.sigmoid(first_nonzero(logratio))
 
+
+def use_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
+    # Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
+    # logprobs = F.log_softmax(logits, dim=-1)
+    weights_adjustment_factor = torch.logsumexp(2 * logp_c, dim=-1, keepdim=True)  # same as sum(probs**2) in log space
+    logp_c_adjusted = logp_c - weights_adjustment_factor
+    logp_c_w = (logp_c_adjusted * mask_c).sum(-1) / mask_c.sum(-1)
+    logp_r_w = (logp_r * mask_r).sum(-1) / mask_r.sum(-1)
+    logratio = logp_c_w - logp_r_w
+    return torch.sigmoid(logratio)
+
+
 def calibrate_prob(df: pd.DataFrame, N:Union[bool,int]=False) -> pd.DataFrame:
     if N is False:
         N = 50
@@ -76,6 +88,7 @@ def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
     prob = score_fn(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
+    # assert torch.isfinite(prob).all(), f"Prob is not finite: {prob}"
 
     # logprob of whole completion
     chosen_logp = (chosen_t_logps * chosen_mask).sum(1)
@@ -115,9 +128,9 @@ def extract_logps(trainer, model, batch, step, score_fn: Callable=score_weighted
             __rejected_mask=rejected_mask
         )
         clear_mem()
-    n = {k:v.detach().cpu() for k,v in n.items()}
+    n = {k:v.detach().cpu().numpy() for k,v in n.items()}
     # metadata
-    n['ds_i'] = i.cpu()
+    n['ds_i'] = i.cpu().numpy()
     return n
 
 @torch.no_grad()
@@ -156,7 +169,8 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
             for adapter_name in adapter_names:
                 with set_adapter(trainer.model, adapter_name):
                     d = extract_logps(trainer, model, batch, step, **kwargs)
-                    d['adapter'] = adapter_name if adapter_name is not None else 'base'
+                    adapter_name if adapter_name is not None else 'base'
+                    d['adapter'] = [adapter_name] * len(d['prob'])
                     data.append(d)
         else:
             d = extract_logps(trainer, model, batch, step, **kwargs)
@@ -164,8 +178,11 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
 
     # so here we have a list of dict of lists. We want concat each key to get a dict of lists
     keys = data[0].keys()
-    data = {k: itertools.chain(*[d[k] for d in data]) for k in keys}
-    df = Dataset.from_dict(data)
+    data2 = {k: itertools.chain(*[d[k] for d in data]) for k in keys}
+    # data2 = {k: torch.concat([d[k] for d in data], 0).cpu().float().numpy() for k in list(keys)[:1]}
+    # data2['adapter'] = list(itertools.chain(*[d['adapter'] for d in data]))
+    # df = Dataset.from_dict(data2).with_format('pandas')
+    df = pd.DataFrame(data2)
     # df = pd.concat(data)
 
     # TODO I'd like a robust way to calibrate logprobs so we can get a better signal with a much smaller dataset
@@ -173,23 +190,16 @@ def eval_dataset(trainer: OPETrainer, dataset: Union[Dataset,str], adapter_names
     df['model'] = trainer.model.config._name_or_path
     df['dataset'] = dsname
 
-
-    if calibrate is not False:
-        df = calibrate_prob(df, N=False)
     return df
 
 
-def eval_datasets(datasets: List[Dataset], trainer: OPETrainer, verbose=1, calibrate=False, **kwargs) -> pd.DataFrame:
+def eval_datasets(datasets: List[Dataset], trainer: OPETrainer, verbose=1, **kwargs) -> pd.DataFrame:
     dfs = []
     for dataset in tqdm(datasets, disable=not verbose, unit='dataset'):
-        df = eval_dataset(trainer, dataset, verbose=verbose, calibrate=False, **kwargs)
+        df = eval_dataset(trainer, dataset, verbose=verbose, **kwargs)
         dfs.append(df)
         clear_mem()
     df = pd.concat(dfs)
-
-    # if we are doing multiple datasets, let override the calibration
-    if calibrate:
-        df = calibrate_prob(df, N=calibrate)
 
     df['model'] = trainer.model.config._name_or_path # Error only has the base model
     return df
