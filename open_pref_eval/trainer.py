@@ -184,14 +184,14 @@ class OPETrainer(DPOTrainer):
     def __init__(self, *pargs, args: Optional[DPOConfig] = None, **kwargs):
         super().__init__(*pargs, args=args, **kwargs)
 
-        # # custom data collator that does tokenisation on the fly to save mem
-        # self.data_collator = OPEDataCollatorWithPadding(
-        #         pad_token_id=self.tokenizer.pad_token_id,
-        #         label_pad_token_id=args.label_pad_token_id,
-        #         is_encoder_decoder=self.is_encoder_decoder,
-        #         tokenizer=self.tokenizer,
-        #         tokenize_row=self.tokenize_row,
-        #     )
+        # custom data collator that does tokenisation on the fly to save mem
+        self.data_collator = OPEDataCollatorWithPadding(
+                pad_token_id=self.processing_class.pad_token_id,
+                label_pad_token_id=args.label_pad_token_id,
+                is_encoder_decoder=self.is_encoder_decoder,
+                tokenizer=self.processing_class,
+                tokenize_row=self.tokenize_row,
+            )
 
         if args.remove_unused_columns:
             args.remove_unused_columns = False
