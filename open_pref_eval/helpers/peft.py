@@ -1,5 +1,5 @@
 from contextlib import contextmanager, nullcontext
-from trl.import_utils import is_peft_available
+from transformers.utils import is_peft_available
 
 if is_peft_available():
     from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training

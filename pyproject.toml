@@ -19,6 +19,7 @@ dependencies = [
   "baukit",
   "loguru>=0.7",
   "tqdm>=4.66",
+  "bitsandbytes>=0.45.5",
 ]
 
 [dependency-groups]
@@ -29,6 +30,9 @@ dev = [
   "matplotlib>=3.9",
   "pytest>=8.3",
   "parameterized>=0.9"
+]
+peft = [
+  "peft>=0.15.2",
 ]
 
 [build-system]

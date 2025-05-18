@@ -27,7 +27,7 @@ wheels = [
 [[package]]
 name = "activation-store"
 version = "0.1.0"
-source = { git = "https://github.com/wassname/activation_store.git#8692769bce45afec38e6adbbc2753aa62b887c5e" }
+source = { git = "https://github.com/wassname/activation_store.git#306b9963a979137d5a3fb595d66d23191a6ff431" }
 dependencies = [
     { name = "baukit" },
     { name = "datasets" },
@@ -188,6 +188,19 @@ dependencies = [
     { name = "numpy" },
     { name = "torch" },
     { name = "torchvision" },
+]
+
+[[package]]
+name = "bitsandbytes"
+version = "0.45.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/b7/cb5ce4d1a382cf53c19ef06c5fc29e85f5e129b4da6527dd207d90a5b8ad/bitsandbytes-0.45.5-py3-none-manylinux_2_24_x86_64.whl", hash = "sha256:a5453f30cc6aab6ccaac364e6bf51a7808d3da5f71763dffeb6d9694c59136e4", size = 76059261 },
+    { url = "https://files.pythonhosted.org/packages/a6/4c/77b535e025ce780d2ada8271c1e481fb7337c1df2588a52fe1c9bd87d2e8/bitsandbytes-0.45.5-py3-none-win_amd64.whl", hash = "sha256:ed1c61b91d989d6a33fd05737d6edbf5086d8ebc89235ee632c7a19144085da2", size = 75430204 },
 ]
 
 [[package]]
@@ -1459,11 +1472,14 @@ source = { editable = "." }
 dependencies = [
     { name = "activation-store" },
     { name = "baukit" },
+    { name = "bitsandbytes" },
     { name = "datasets" },
     { name = "einops" },
     { name = "jaxtyping" },
+    { name = "loguru" },
     { name = "pandas" },
     { name = "torch" },
+    { name = "tqdm" },
     { name = "transformers", extra = ["torch"] },
     { name = "trl" },
 ]
@@ -1472,38 +1488,41 @@ dependencies = [
 dev = [
     { name = "ipykernel" },
     { name = "ipywidgets" },
-    { name = "loguru" },
     { name = "matplotlib" },
     { name = "parameterized" },
     { name = "pytest" },
     { name = "tabulate" },
-    { name = "tqdm" },
+]
+peft = [
+    { name = "peft" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "activation-store", git = "https://github.com/wassname/activation_store.git" },
     { name = "baukit", git = "https://github.com/davidbau/baukit.git" },
-    { name = "datasets", specifier = ">=3.3.0" },
-    { name = "einops", specifier = ">=0.8.1" },
-    { name = "jaxtyping", specifier = ">=0.2.19" },
-    { name = "pandas", specifier = ">=2.2.0" },
-    { name = "torch", specifier = ">=2.3.0" },
+    { name = "bitsandbytes", specifier = ">=0.45.5" },
+    { name = "datasets", specifier = ">=3.3" },
+    { name = "einops", specifier = ">=0.8" },
+    { name = "jaxtyping", specifier = ">=0.2" },
+    { name = "loguru", specifier = ">=0.7" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "torch", specifier = ">=2.3" },
+    { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", extras = ["torch"], specifier = ">=4.43.2" },
-    { name = "trl", specifier = ">=0.9.4" },
+    { name = "trl", specifier = ">=0.12" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "ipykernel", specifier = ">=6.29.5" },
-    { name = "ipywidgets", specifier = ">=8.1.3" },
-    { name = "loguru", specifier = ">=0.7.2" },
-    { name = "matplotlib", specifier = ">=3.9.1" },
-    { name = "parameterized", specifier = ">=0.9.0" },
-    { name = "pytest", specifier = ">=8.3.2" },
-    { name = "tabulate", specifier = ">=0.9.0" },
-    { name = "tqdm", specifier = ">=4.66.4" },
+    { name = "ipykernel", specifier = ">=6.29" },
+    { name = "ipywidgets", specifier = ">=8.1" },
+    { name = "matplotlib", specifier = ">=3.9" },
+    { name = "parameterized", specifier = ">=0.9" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "tabulate", specifier = ">=0.9" },
 ]
+peft = [{ name = "peft", specifier = ">=0.15.2" }]
 
 [[package]]
 name = "packaging"
@@ -1578,6 +1597,27 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/66/94/68e2e17afaa9169cf6412ab0f28623903be73d1b32e208d9e8e541bb086d/parso-0.8.4.tar.gz", hash = "sha256:eb3a7b58240fb99099a345571deecc0f9540ea5f4dd2fe14c2a99d6b281ab92d", size = 400609 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c6/ac/dac4a63f978e4dcb3c6d3a78c4d8e0192a113d288502a1216950c41b1027/parso-0.8.4-py2.py3-none-any.whl", hash = "sha256:a418670a20291dacd2dddc80c377c5c3791378ee1e8d12bffc35420643d43f18", size = 103650 },
+]
+
+[[package]]
+name = "peft"
+version = "0.15.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "psutil" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/33/65/faa18cd8ffbe0f742c3f2559770646cce2574b9cd28a2a05e8d36f64e968/peft-0.15.2.tar.gz", hash = "sha256:7059029f4d42a092ded1aa117dd366a46084aef638bdd593f6ab0195d5427fcd", size = 472952 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/85/8e6ea3d1089f2b6de3c1cd34bbbd7560912af9d34b057be3b8b8fefe1da3/peft-0.15.2-py3-none-any.whl", hash = "sha256:0dfc942b03b7af4b7267cd4e30b15e3a4a1d277adc581ce6245fc13f1f93d0a0", size = 411051 },
 ]
 
 [[package]]
