@@ -41,7 +41,7 @@ def extract_logps(model, batch, step: int, score_fn: Callable=score_weighted, in
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
     prob = score_fn(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
-    # assert torch.isfinite(prob).all(), f"Prob is not finite: {prob}"
+    assert torch.isfinite(prob).all(), f"Prob is not finite: {prob}"
 
     # logprob of whole completion
     chosen_logp = (chosen_t_logps * chosen_mask).sum(1)

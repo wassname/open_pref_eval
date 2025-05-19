@@ -1,23 +1,15 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datasets import Dataset
-import tempfile
 import torch
-from trl import DPOConfig, DPOTrainer
 from typing import Optional, Tuple, Dict, Any, List, Callable, Union
 import torch.nn as nn
 import torch.nn.functional as F
-import warnings
 from einops import rearrange
 from torch import Tensor
 from jaxtyping import Float
+from transformers import AutoTokenizer
 from transformers.data.data_collator import DataCollatorMixin
-from functools import partial
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from torch.nn.utils.rnn import pad_sequence
-import numpy as np
 from trl.trainer.utils import selective_log_softmax, flush_left
-# from trl.trainer.dpo_trainer import DataCollatorForPreference
-from .helpers.hf_progbar import no_hf_tqdm
 
 
 
@@ -126,60 +118,39 @@ class DataCollatorForPreference(DataCollatorMixin):
         }
     
 
-
-
-def pad_to_length(tensor: torch.Tensor, length: int, pad_value: Union[int, float], dim: int = -1) -> torch.Tensor:
-    if tensor.size(dim) >= length:
-        return tensor
-    else:
-        pad_size = list(tensor.shape)
-        pad_size[dim] = length - tensor.size(dim)
-        return torch.cat(
-            [
-                tensor,
-                pad_value * torch.ones(*pad_size, dtype=tensor.dtype, device=tensor.device),
-            ],
-            dim=dim,
-        )
-
-
 def concatenated_inputs(
-    batch: dict[str, Union[list, torch.LongTensor]], padding_value: int
-) -> dict[str, torch.LongTensor]:
-    output = {}
+    batch: dict[str, torch.Tensor], 
+) -> dict[str, torch.Tensor]:
+    output: dict[str, torch.Tensor] = {}
 
-    # For the prompt, the input_ids are the same for both the chosen and rejected responses
-    output["prompt_input_ids"] = torch.cat([batch["prompt_input_ids"], batch["prompt_input_ids"]], dim=0)
+    # duplicate prompt for chosen/rejected
+    output["prompt_input_ids"] = torch.cat(
+        [batch["prompt_input_ids"], batch["prompt_input_ids"]], dim=0
+    )
     output["prompt_attention_mask"] = torch.cat(
         [batch["prompt_attention_mask"], batch["prompt_attention_mask"]], dim=0
     )
-    # Concatenate the chosen and rejected completions
-    max_completion_length = max(batch["chosen_input_ids"].shape[1], batch["rejected_input_ids"].shape[1])
+
+    # since chosen_input_ids & rejected_input_ids are already
+    # right-padded to the same max_completion_length in the collator,
+    # we can just cat them along the batch‐dim:
     output["completion_input_ids"] = torch.cat(
-        (
-            pad_to_length(batch["chosen_input_ids"], max_completion_length, pad_value=padding_value),
-            pad_to_length(batch["rejected_input_ids"], max_completion_length, pad_value=padding_value),
-        ),
+        (batch["chosen_input_ids"], batch["rejected_input_ids"]), dim=0
     )
     output["completion_attention_mask"] = torch.cat(
-        (
-            pad_to_length(batch["chosen_attention_mask"], max_completion_length, pad_value=0),
-            pad_to_length(batch["rejected_attention_mask"], max_completion_length, pad_value=0),
-        ),
+        (batch["chosen_attention_mask"], batch["rejected_attention_mask"]), dim=0
     )
 
     return output
 
-def concatenated_forward(model: nn.Module, batch: dict[str, Union[list, torch.LongTensor]], padding_value: int = 0, device=None, dtype=None) -> dict[str, Float[Tensor, 'b t']]:
+def concatenated_forward(model: nn.Module, batch: dict[str, Union[list, torch.LongTensor]], device=None, dtype=None) -> dict[str, Float[Tensor, 'b t']]:
     """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
     We do this to avoid doing two forward passes, because it's faster for FSDP.
-
-    MODIFIED FROM TRL to return per token logps. I removed image, logits_to_keep, and paddning_free, truncation (should be done prior) logic to simplify it
     """
     num_examples = batch["prompt_input_ids"].shape[0]
 
-    concatenated_batch = concatenated_inputs(batch, padding_value=padding_value)
+    concatenated_batch = concatenated_inputs(batch)
 
     model_kwargs = {"use_cache": False}
 
