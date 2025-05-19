@@ -1,68 +1,29 @@
 from dataclasses import dataclass
-from datasets import Dataset
+from typing import Union
+
 import torch
-from typing import Optional, Tuple, Dict, Any, List, Callable, Union
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
-from torch import Tensor
+from datasets import Dataset
 from jaxtyping import Float
+from torch import Tensor
 from transformers import AutoTokenizer
 from transformers.data.data_collator import DataCollatorMixin
-from trl.trainer.utils import selective_log_softmax, flush_left
-
-
-
-dummy_dataset_dict = {
-    "prompt": [
-        "hello",
-        "how are you",
-        "What is your name?",
-        "What is your name?",
-        "Which is the best programming language?",
-        "Which is the best programming language?",
-        "Which is the best programming language?",
-        "[INST] How is the stock price? [/INST]",
-        "[INST] How is the stock price? [/INST] ",
-    ],
-    "chosen": [
-        "hi nice to meet you",
-        "I am fine",
-        "My name is Mary",
-        "My name is Mary",
-        "Python",
-        "Python",
-        "Python",
-        "$46 as of 10am EST",
-        "46 as of 10am EST",
-    ],
-    "rejected": [
-        "leave me alone",
-        "I am not fine",
-        "Whats it to you?",
-        "I dont have a name",
-        "Javascript",
-        "C++",
-        "Java",
-        " $46 as of 10am EST",
-        " 46 as of 10am EST",
-    ],
-}
-dummy_dataset = Dataset.from_dict(dummy_dataset_dict)
+from trl.trainer.utils import flush_left, selective_log_softmax
 
 
 
 @dataclass
 class DataCollatorForPreference(DataCollatorMixin):
     tokenizer: AutoTokenizer
-    max_prompt_length:    int
-    max_completion_length:int
-    pad_token_id:         int
-    
+    max_prompt_length: int
+    max_completion_length: int
+    pad_token_id: int
+
     def __call__(self, raw_features: list[dict]) -> dict[str, torch.Tensor]:
-        prompts  = [f["prompt"]  for f in raw_features]
-        choiceds = [f["chosen"]  for f in raw_features]
-        rejects  = [f["rejected"] for f in raw_features]
+        prompts = [f["prompt"] for f in raw_features]
+        choiceds = [f["chosen"] for f in raw_features]
+        rejects = [f["rejected"] for f in raw_features]
 
         # 1) prompt: left-pad & truncate
         self.tokenizer.padding_side = "left"
@@ -91,8 +52,12 @@ class DataCollatorForPreference(DataCollatorMixin):
             max_length=comp_max,
         )
         # append EOS
-        chosen_inputs  = [ids + [self.tokenizer.eos_token_id] for ids in tok_chosen["input_ids"]]
-        rejected_inputs= [ids + [self.tokenizer.eos_token_id] for ids in tok_reject["input_ids"]]
+        chosen_inputs = [
+            ids + [self.tokenizer.eos_token_id] for ids in tok_chosen["input_ids"]
+        ]
+        rejected_inputs = [
+            ids + [self.tokenizer.eos_token_id] for ids in tok_reject["input_ids"]
+        ]
 
         # 3) now pad *only* (no truncation arg!) up to max_completion_length
         chosen_batch = self.tokenizer.pad(
@@ -109,41 +74,55 @@ class DataCollatorForPreference(DataCollatorMixin):
         )
 
         return {
-            "prompt_input_ids":        prompt_batch["input_ids"],
-            "prompt_attention_mask":   prompt_batch["attention_mask"],
-            "chosen_input_ids":        chosen_batch["input_ids"],
-            "chosen_attention_mask":   chosen_batch["attention_mask"],
-            "rejected_input_ids":      rejected_batch["input_ids"],
+            "prompt_input_ids": prompt_batch["input_ids"],
+            "prompt_attention_mask": prompt_batch["attention_mask"],
+            "chosen_input_ids": chosen_batch["input_ids"],
+            "chosen_attention_mask": chosen_batch["attention_mask"],
+            "rejected_input_ids": rejected_batch["input_ids"],
             "rejected_attention_mask": rejected_batch["attention_mask"],
         }
-    
+
 
 def concatenated_inputs(
-    batch: dict[str, torch.Tensor], 
+    batch: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
     output: dict[str, torch.Tensor] = {}
-
-    # duplicate prompt for chosen/rejected
+    # duplicate prompt
     output["prompt_input_ids"] = torch.cat(
         [batch["prompt_input_ids"], batch["prompt_input_ids"]], dim=0
     )
     output["prompt_attention_mask"] = torch.cat(
         [batch["prompt_attention_mask"], batch["prompt_attention_mask"]], dim=0
     )
+    # Grab the raw chosen/rejected pairs
+    chosen_ids = batch["chosen_input_ids"]
+    rejected_ids = batch["rejected_input_ids"]
+    chosen_mask = batch["chosen_attention_mask"]
+    rejected_mask = batch["rejected_attention_mask"]
+    # compute a common max‐completion length
+    m = max(chosen_ids.size(1), rejected_ids.size(1))
 
-    # since chosen_input_ids & rejected_input_ids are already
-    # right-padded to the same max_completion_length in the collator,
-    # we can just cat them along the batch‐dim:
-    output["completion_input_ids"] = torch.cat(
-        (batch["chosen_input_ids"], batch["rejected_input_ids"]), dim=0
-    )
-    output["completion_attention_mask"] = torch.cat(
-        (batch["chosen_attention_mask"], batch["rejected_attention_mask"]), dim=0
-    )
+    # right-pad both to length m (pad_token_id=0 here; adjust if yours is different)
+    def pad_right(t: torch.Tensor, length: int, pad_val: int):
+        pad_amt = length - t.size(1)
+        return F.pad(t, (0, pad_amt), value=pad_val)
 
+    chosen_ids = pad_right(chosen_ids, m, pad_val=0)
+    rejected_ids = pad_right(rejected_ids, m, pad_val=0)
+    chosen_mask = pad_right(chosen_mask, m, pad_val=0)
+    rejected_mask = pad_right(rejected_mask, m, pad_val=0)
+    # now safe to concat
+    output["completion_input_ids"] = torch.cat((chosen_ids, rejected_ids), dim=0)
+    output["completion_attention_mask"] = torch.cat((chosen_mask, rejected_mask), dim=0)
     return output
 
-def concatenated_forward(model: nn.Module, batch: dict[str, Union[list, torch.LongTensor]], device=None, dtype=None) -> dict[str, Float[Tensor, 'b t']]:
+
+def concatenated_forward(
+    model: nn.Module,
+    batch: dict[str, Union[list, torch.LongTensor]],
+    device=None,
+    dtype=None,
+) -> dict[str, Float[Tensor, "b t"]]:
     """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
     We do this to avoid doing two forward passes, because it's faster for FSDP.
@@ -167,7 +146,9 @@ def concatenated_forward(model: nn.Module, batch: dict[str, Union[list, torch.Lo
 
     # Concatenate the prompt and completion inputs
     input_ids = torch.cat((prompt_input_ids, completion_input_ids), dim=1)
-    attention_mask = torch.cat((prompt_attention_mask, completion_attention_mask), dim=1)
+    attention_mask = torch.cat(
+        (prompt_attention_mask, completion_attention_mask), dim=1
+    )
     # Mask the prompt but not the completion for the loss
     loss_mask = torch.cat(
         (torch.zeros_like(prompt_attention_mask), completion_attention_mask),
@@ -177,11 +158,12 @@ def concatenated_forward(model: nn.Module, batch: dict[str, Union[list, torch.Lo
     # Flush left to reduce the memory usage
     # [[0, 0, x, x, x, x],  ->  [[x, x, x, x],
     #  [0, x, x, x, 0, 0]]       [x, x, x, 0]]
-    attention_mask, input_ids, loss_mask = flush_left(attention_mask, input_ids, loss_mask)
+    attention_mask, input_ids, loss_mask = flush_left(
+        attention_mask, input_ids, loss_mask
+    )
 
     model_kwargs["attention_mask"] = attention_mask
 
-    
     with torch.autocast(device, dtype):
         outputs = model(input_ids, **model_kwargs)
     logits = outputs.logits
