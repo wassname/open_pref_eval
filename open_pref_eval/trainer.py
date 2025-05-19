@@ -13,6 +13,7 @@ from jaxtyping import Float
 from transformers.data.data_collator import DataCollatorMixin
 from functools import partial
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 from trl.trainer.utils import selective_log_softmax, flush_left
 # from trl.trainer.dpo_trainer import DataCollatorForPreference
@@ -59,143 +60,72 @@ dummy_dataset = Dataset.from_dict(dummy_dataset_dict)
 
 
 
-def pad(tensors: list[torch.Tensor], padding_value: int = 0, padding_side: str = "right") -> torch.Tensor:
-    """
-    Pads a list of tensors to the same shape along the first dimension.
-
-    Args:
-        tensors (`list[torch.Tensor]`):
-            List of input tensors to pad.
-        padding_value (`int`):
-            Value to use for padding. Default is 0.
-        padding_side (`str`):
-            Side on which to add padding. Must be 'left' or 'right'. Default is 'right'.
-
-    Returns:
-        `torch.Tensor`:
-            A single tensor containing the padded tensors.
-
-    Examples:
-        >>> import torch
-        >>> pad([torch.tensor([1, 2, 3]), torch.tensor([4, 5])])
-        tensor([[1, 2, 3],
-                [4, 5, 0]])
-        >>> pad([torch.tensor([[1, 2], [3, 4]]), torch.tensor([[5, 6]])])
-        tensor([[[1, 2],
-                [3, 4]],
-
-                [[5, 6],
-                [0, 0]]])
-    """
-    # Determine the maximum shape for each dimension
-    output_shape = np.max([t.shape for t in tensors], 0).tolist()
-
-    # Create an output tensor filled with the padding value
-    output = torch.full((len(tensors), *output_shape), padding_value, dtype=tensors[0].dtype, device=tensors[0].device)
-
-    for i, t in enumerate(tensors):
-        # Determine the slice for the sequence dimension
-        if padding_side == "left":
-            seq_slice = slice(output_shape[0] - t.shape[0], output_shape[0])
-        elif padding_side == "right":
-            seq_slice = slice(0, t.shape[0])
-        else:
-            raise ValueError("padding_side must be 'left' or 'right'")
-
-        slices = (seq_slice,) + tuple(slice(0, s) for s in t.shape[1:])
-        output[i][slices] = t
-
-    return output
-
 @dataclass
 class DataCollatorForPreference(DataCollatorMixin):
-
     tokenizer: AutoTokenizer
-    pad_token_id: int
-    return_tensors: str = "pt"
+    max_prompt_length:    int
+    max_completion_length:int
+    pad_token_id:         int
+    
+    def __call__(self, raw_features: list[dict]) -> dict[str, torch.Tensor]:
+        prompts  = [f["prompt"]  for f in raw_features]
+        choiceds = [f["chosen"]  for f in raw_features]
+        rejects  = [f["rejected"] for f in raw_features]
 
-    def torch_call(self, examples: list[Union[list[int], Any, dict[str, Any]]]) -> dict[str, Any]:
-        # Convert to tensor
-        prompt_input_ids = [torch.tensor(example["prompt_input_ids"]) for example in examples]
-        prompt_attention_mask = [torch.ones_like(input_ids) for input_ids in prompt_input_ids]
-        chosen_input_ids = [torch.tensor(example["chosen_input_ids"]) for example in examples]
-        chosen_attention_mask = [torch.ones_like(input_ids) for input_ids in chosen_input_ids]
-        rejected_input_ids = [torch.tensor(example["rejected_input_ids"]) for example in examples]
-        rejected_attention_mask = [torch.ones_like(input_ids) for input_ids in rejected_input_ids]
-        if "ref_chosen_logps" in examples[0] and "ref_rejected_logps" in examples[0]:
-            ref_chosen_logps = torch.tensor([example["ref_chosen_logps"] for example in examples])
-            ref_rejected_logps = torch.tensor([example["ref_rejected_logps"] for example in examples])
+        # 1) prompt: left-pad & truncate
+        self.tokenizer.padding_side = "left"
+        prompt_batch = self.tokenizer(
+            prompts,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=self.max_prompt_length,
+            padding="longest",
+            return_tensors="pt",
+        )
 
-        # Pad
-        output = {}
-        output["prompt_input_ids"] = pad(prompt_input_ids, padding_value=self.pad_token_id, padding_side="left")
-        output["prompt_attention_mask"] = pad(prompt_attention_mask, padding_value=0, padding_side="left")
-        output["chosen_input_ids"] = pad(chosen_input_ids, padding_value=self.pad_token_id)
-        output["chosen_attention_mask"] = pad(chosen_attention_mask, padding_value=0)
-        output["rejected_input_ids"] = pad(rejected_input_ids, padding_value=self.pad_token_id)
-        output["rejected_attention_mask"] = pad(rejected_attention_mask, padding_value=0)
-        if "ref_chosen_logps" in examples[0] and "ref_rejected_logps" in examples[0]:
-            output["ref_chosen_logps"] = ref_chosen_logps
-            output["ref_rejected_logps"] = ref_rejected_logps
+        # 2) chosen + rejected: first truncate to room for EOS
+        self.tokenizer.padding_side = "right"
+        comp_max = self.max_completion_length - 1
+        tok_chosen = self.tokenizer(
+            choiceds,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=comp_max,
+        )
+        tok_reject = self.tokenizer(
+            rejects,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=comp_max,
+        )
+        # append EOS
+        chosen_inputs  = [ids + [self.tokenizer.eos_token_id] for ids in tok_chosen["input_ids"]]
+        rejected_inputs= [ids + [self.tokenizer.eos_token_id] for ids in tok_reject["input_ids"]]
 
-        return output
+        # 3) now pad *only* (no truncation arg!) up to max_completion_length
+        chosen_batch = self.tokenizer.pad(
+            {"input_ids": chosen_inputs},
+            max_length=self.max_completion_length,
+            padding="longest",
+            return_tensors="pt",
+        )
+        rejected_batch = self.tokenizer.pad(
+            {"input_ids": rejected_inputs},
+            max_length=self.max_completion_length,
+            padding="longest",
+            return_tensors="pt",
+        )
 
-
-@dataclass
-class OPEDataCollatorWithPadding(DataCollatorForPreference):
-
-    tokenizer: AutoTokenizer
-    max_prompt_length: Optional[int] = 512
-    max_completion_length: Optional[int] = 1024
-
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # tokenize each row, this does not add special tokens or mask
-        tokenized_features = [tokenize_row(feature, self.tokenizer, max_prompt_length=self.max_prompt_length, max_completion_length=self.max_completion_length) for feature in features]
-
-        # then collate normally, this adds mask
-        return super().__call__(tokenized_features)
+        return {
+            "prompt_input_ids":        prompt_batch["input_ids"],
+            "prompt_attention_mask":   prompt_batch["attention_mask"],
+            "chosen_input_ids":        chosen_batch["input_ids"],
+            "chosen_attention_mask":   chosen_batch["attention_mask"],
+            "rejected_input_ids":      rejected_batch["input_ids"],
+            "rejected_attention_mask": rejected_batch["attention_mask"],
+        }
     
 
-@staticmethod
-def tokenize_row(features, processing_class, max_prompt_length, max_completion_length):
-    """
-    Tokenize a row of the dataset.
-
-    Args:
-        features (`dict[str, str]`):
-            Row of the dataset, should contain the keys `"prompt"`, `"chosen"`, and `"rejected"`.
-        processing_class (`PreTrainedTokenizerBase`):
-            Processing class used to process the data.
-        max_prompt_length (`int` or `None`):
-            Maximum length of the prompt sequence. If `None`, the prompt sequence is not truncated.
-        max_completion_length (`int` or `None`):
-            Maximum length of the completion sequences. If `None`, the completion sequences are not truncated.
-
-    Returns:
-        `dict[str, list[int]]`:
-            Tokenized sequences with the keys `"prompt_input_ids"`, `"chosen_input_ids"`, and
-            `"rejected_input_ids".
-    """
-    tokenizer = processing_class  # the processing class is a tokenizer
-    prompt_input_ids = tokenizer(features["prompt"], add_special_tokens=False)["input_ids"]
-    chosen_input_ids = tokenizer(features["chosen"], add_special_tokens=False)["input_ids"]
-    rejected_input_ids = tokenizer(features["rejected"], add_special_tokens=False)["input_ids"]
-
-    chosen_input_ids = chosen_input_ids + [tokenizer.eos_token_id]
-    rejected_input_ids = rejected_input_ids + [tokenizer.eos_token_id]
-
-    # Truncate prompt and completion sequences
-    if max_prompt_length is not None:
-        prompt_input_ids = prompt_input_ids[-max_prompt_length:]
-    if max_completion_length is not None:
-        chosen_input_ids = chosen_input_ids[:max_completion_length]
-        rejected_input_ids = rejected_input_ids[:max_completion_length]
-
-    return {
-        "prompt_input_ids": prompt_input_ids,
-        "chosen_input_ids": chosen_input_ids,
-        "rejected_input_ids": rejected_input_ids,
-    }
 
 
 def pad_to_length(tensor: torch.Tensor, length: int, pad_value: Union[int, float], dim: int = -1) -> torch.Tensor:
@@ -225,7 +155,6 @@ def concatenated_inputs(
     )
     # Concatenate the chosen and rejected completions
     max_completion_length = max(batch["chosen_input_ids"].shape[1], batch["rejected_input_ids"].shape[1])
-    # FIXME pad_to_length is turning int to float
     output["completion_input_ids"] = torch.cat(
         (
             pad_to_length(batch["chosen_input_ids"], max_completion_length, pad_value=padding_value),

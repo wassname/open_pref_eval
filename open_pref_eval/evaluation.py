@@ -19,7 +19,7 @@ from .datasets import get_default_datasets, ds2name, Dataset
 from .helpers.peft import set_adapter, is_peft_model, adapter_is_disabled
 from .helpers.mem import clear_mem
 from .scoring import score_1st_diverg, score_weighted, score_preferences, score_ipo
-from .trainer import OPEDataCollatorWithPadding, concatenated_forward
+from .trainer import DataCollatorForPreference, concatenated_forward
 
 
 
@@ -120,7 +120,7 @@ def eval_dataset(model: PreTrainedModel, tokenizer: PreTrainedTokenizerBase, dat
         # dataset = dataset.map(trainer.tokenize_row, num_proc=trainer.dataset_num_proc, writer_batch_size=100, desc='tokenize', keep_in_memory=False)
     
     assert max_length>max_prompt_length, f"max_length {max_length} must be greater than max_prompt_length {max_prompt_length}"
-    data_collator = OPEDataCollatorWithPadding(
+    data_collator = DataCollatorForPreference(
         pad_token_id=tokenizer.pad_token_id,
         tokenizer=tokenizer,
         max_prompt_length=max_prompt_length, 
