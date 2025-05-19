@@ -27,6 +27,7 @@ class DataCollatorForPreference(DataCollatorMixin):
 
         # 1) prompt: left-pad & truncate
         self.tokenizer.padding_side = "left"
+        self.tokenizer.truncation_side = "left"
         prompt_batch = self.tokenizer(
             prompts,
             add_special_tokens=False,
@@ -38,6 +39,7 @@ class DataCollatorForPreference(DataCollatorMixin):
 
         # 2) chosen + rejected: first truncate to room for EOS
         self.tokenizer.padding_side = "right"
+        self.tokenizer.truncation_side = "right"
         comp_max = self.max_completion_length - 1
         tok_chosen = self.tokenizer(
             choiceds,

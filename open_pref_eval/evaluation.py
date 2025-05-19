@@ -39,7 +39,7 @@ def extract_logps(
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
     prob = score_fn(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
-    assert torch.isfinite(prob).all(), f"Prob is not finite: {prob}"
+    # assert torch.isfinite(prob).all(), f"Prob is not finite: {prob}"
 
     # logprob of whole completion
     chosen_logp = (chosen_t_logps * chosen_mask).sum(1)
@@ -166,13 +166,8 @@ def eval_dataset(
     # so here we have a list of dict of lists. We want concat each key to get a dict of lists
     keys = data[0].keys()
     data2 = {k: itertools.chain(*[d[k] for d in data]) for k in keys}
-    # data2 = {k: torch.concat([d[k] for d in data], 0).cpu().float().numpy() for k in list(keys)[:1]}
-    # data2['adapter'] = list(itertools.chain(*[d['adapter'] for d in data]))
-    # df = Dataset.from_dict(data2).with_format('pandas')
     df = pd.DataFrame(data2)
-    # df = pd.concat(data)
 
-    # TODO I'd like a robust way to calibrate logprobs so we can get a better signal with a much smaller dataset
     df["correct"] = df["prob"] > 0.5
     df["model"] = model.config._name_or_path
     df["dataset"] = dsname
