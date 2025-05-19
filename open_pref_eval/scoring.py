@@ -117,3 +117,14 @@ def score_weighted_prob(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t
 
     # return uncalibrated probability
     return cs / (cs + rs + eps)
+
+
+def use_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t']):
+    # Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
+    # logprobs = F.log_softmax(logits, dim=-1)
+    weights_adjustment_factor = torch.logsumexp(2 * logp_c, dim=-1, keepdim=True)  # same as sum(probs**2) in log space
+    logp_c_adjusted = logp_c - weights_adjustment_factor
+    logp_c_w = (logp_c_adjusted * mask_c).sum(-1) / mask_c.sum(-1)
+    logp_r_w = (logp_r * mask_r).sum(-1) / mask_r.sum(-1)
+    logratio = logp_c_w - logp_r_w
+    return torch.sigmoid(logratio)

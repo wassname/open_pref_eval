@@ -1,3 +1,8 @@
+this fork
+- remove trl
+- replace trl classes with plain torch (e.g. pad)
+- performance
+
 # OpenPrefEval: Dead Simple Open LLM Evaluation
 
 Quick evals with no judge. It works like this:
