@@ -45,7 +45,7 @@ def extract_logps(
     outputs = {}
     if isinstance(score_fn, dict):
         for k, score_fn in score_fn.items():
-            outputs[f"score_{k}"] = score_fn(
+            o = score_fn(
                 chosen_t_logps,
                 rejected_t_logps,
                 chosen_mask,
@@ -53,11 +53,11 @@ def extract_logps(
                 logp_vocab_conc_c,
                 logp_vocab_conc_r
             )
-            # assert torch.isfinite(outputs[f"score_{k}"]).all(), f"Score {k} is not finite: {outputs[f'score_{k}']}"
-            assert outputs[f"score_{k}"].shape == (bs,), f"Score {k} has wrong shape: {outputs[f'score_{k}'].shape}"
-        outputs["prob"] = outputs[f"score_{k}"] # use the last one as prob
+            o = {f"score_{k}__{kk}": v for kk,v in o.items()}
+            outputs.update(o)
+        outputs["prob"] = outputs[f"score_{k}__sigmoid"] # use the last one as prob
     else:
-        outputs["prob"] = score_fn(
+        o = score_fn(
             chosen_t_logps,
             rejected_t_logps,
             chosen_mask,
@@ -65,8 +65,10 @@ def extract_logps(
             logp_vocab_conc_c,
             logp_vocab_conc_r,
         )
+        o = {f"score__{kk}": v for kk, v in o.items()}
+        outputs.update(o)
+        outputs["prob"] = outputs["score__sigmoid"]  # use the sigmoid as prob
 
-    outputs["prob"] = torch.sigmoid(outputs["prob"])
     outputs["prob"] = outputs["prob"]
     # assert torch.isfinite(outputs["prob"]).all(), f"Prob is not finite: {outputs['prob']}"
 
