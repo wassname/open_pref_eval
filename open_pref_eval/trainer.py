@@ -1,232 +1,243 @@
-from dataclasses import dataclass, field
-from datasets import Dataset, features
-import tempfile
+from dataclasses import dataclass
+from typing import Union
+
 import torch
-from trl import DPOConfig, DPOTrainer
-from typing import Optional, Tuple, Dict, Any, List, Callable
-import warnings
-from trl.trainer.dpo_trainer import DPODataCollatorWithPadding
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from .helpers.hf_progbar import no_hf_tqdm
-
-
-def alias_trl_kwargs(kwargs):
-    """We take in transformers and trl trainer args, which are obscure, so we offer aliases"""
-    popping = {
-        # alias: full_kargs
-        'batch_size': 'per_device_eval_batch_size',
-    }
-    aliasing = {
-        'bf16': 'bf16_full_eval',
-        'fp16': 'fp16_full_eval',
-    }
-    for k,v in popping.items():
-        if k in kwargs:
-            if not v in kwargs:
-                kwargs[v] = kwargs.pop(k)
-    for k,v in aliasing.items():
-        if k in kwargs:
-            if not v in kwargs:
-                kwargs[v] = kwargs[k]
-    return kwargs
-
-dummy_dataset_dict = {
-    "prompt": [
-        "hello",
-        "how are you",
-        "What is your name?",
-        "What is your name?",
-        "Which is the best programming language?",
-        "Which is the best programming language?",
-        "Which is the best programming language?",
-        "[INST] How is the stock price? [/INST]",
-        "[INST] How is the stock price? [/INST] ",
-    ],
-    "chosen": [
-        "hi nice to meet you",
-        "I am fine",
-        "My name is Mary",
-        "My name is Mary",
-        "Python",
-        "Python",
-        "Python",
-        "$46 as of 10am EST",
-        "46 as of 10am EST",
-    ],
-    "rejected": [
-        "leave me alone",
-        "I am not fine",
-        "Whats it to you?",
-        "I dont have a name",
-        "Javascript",
-        "C++",
-        "Java",
-        " $46 as of 10am EST",
-        " 46 as of 10am EST",
-    ],
-}
-dummy_dataset = Dataset.from_dict(dummy_dataset_dict)
-
-@dataclass
-class OPEConfig(DPOConfig):
-    loss_type: str = 'ipo'
-    max_length: int = 512
-    max_prompt_length: int = 128
-    disable_tqdm=True
-    should_save=False
-    output_dir: Optional[str] = field(
-        default=None,
-        metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
-    )
-    remove_unused_columns: Optional[bool] = field(
-        default=False, metadata={"help": "Remove columns not required by the model when using an nlp.Dataset."}
-    )
-    dataloader_pin_memory: bool = True
-
-
-@no_hf_tqdm()
-def get_dummy_trainer(model=None, tokenizer=None, model_name:Optional[str]=None, per_device_eval_batch_size=8, model_kwargs={}, **kwargs):
-    """
-    Make a dummy trainer, 
-
-    For keyword arguments, see 
-    - [transformers.TrainingArguments](https://huggingface.co/docs/transformers/v4.43.3/en/main_classes/trainer#transformers.TrainingArguments)
-    - [trl.DPOConfig](https://huggingface.co/docs/trl/main/en/dpo_trainer#trl.DPOConfig)
-
-    """
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        training_args = OPEConfig(
-            output_dir=tmp_dir,
-            per_device_eval_batch_size=per_device_eval_batch_size,
-            **kwargs
-        )
-
-    if model_name is not None:
-        model = AutoModelForCausalLM.from_pretrained(model_name,
-                                                    **model_kwargs,
-                                                     )
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-    if model is None:
-        raise ValueError('model or model_name must be provided')
-
-    # we use a TRL class
-    trainer = OPETrainer(
-        model=model,
-        ref_model=None,
-        args=training_args,
-        tokenizer=tokenizer,
-        train_dataset=dummy_dataset,
-        eval_dataset=dummy_dataset,
-    )
-    return trainer
+import torch.nn as nn
+import torch.nn.functional as F
+from loguru import logger
+from datasets import Dataset
+from jaxtyping import Float
+from torch import Tensor
+from transformers import AutoTokenizer
+from transformers.data.data_collator import DataCollatorMixin
+from trl.trainer.utils import flush_left, selective_log_softmax
 
 
 
 @dataclass
-class OPEDataCollatorWithPadding(DPODataCollatorWithPadding):
-    tokenizer: Optional[AutoTokenizer] = None
-    tokenize_row: Optional[Callable] = None
+class DataCollatorForPreference(DataCollatorMixin):
+    tokenizer: AutoTokenizer
+    max_prompt_length: int
+    max_completion_length: int
+    pad_token_id: int
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # tokenize
-        tokenized_features = [self.tokenize_row(feature) for feature in features]
-        return super().__call__(tokenized_features)
+    def __call__(self, raw_features: list[dict]) -> dict[str, torch.Tensor]:
+        prompts = [f["prompt"] for f in raw_features]
+        choiceds = [f["chosen"] for f in raw_features]
+        rejects = [f["rejected"] for f in raw_features]
+
+        # 1) prompt: left-pad & truncate
+        self.tokenizer.padding_side = "left"
+        self.tokenizer.truncation_side = "left"
+        prompt_batch = self.tokenizer(
+            prompts,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=self.max_prompt_length,
+            padding="longest",
+            return_tensors="pt",
+            # return_overflowing_tokens=True,
+        )
 
 
-class OPETrainer(DPOTrainer):
+        # 2) chosen + rejected: first truncate to room for EOS
+        self.tokenizer.padding_side = "right"
+        self.tokenizer.truncation_side = "right"
+        comp_max = self.max_completion_length - 1
+        tok_chosen = self.tokenizer(
+            choiceds,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=comp_max,
+            # return_overflowing_tokens=True,
+        )
+        tok_reject = self.tokenizer(
+            rejects,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=comp_max,
+            # return_overflowing_tokens=True,
+        )
+        # append EOS
+        chosen_inputs = [
+            ids + [self.tokenizer.eos_token_id] for ids in tok_chosen["input_ids"]
+        ]
+        rejected_inputs = [
+            ids + [self.tokenizer.eos_token_id] for ids in tok_reject["input_ids"]
+        ]
 
-    def __init__(self, *pargs, args: Optional[DPOConfig] = None, **kwargs):
-        super().__init__(*pargs, args=args, **kwargs)
+        # 3) now pad *only* (no truncation arg!) up to max_completion_length
+        chosen_batch = self.tokenizer.pad(
+            {"input_ids": chosen_inputs},
+            max_length=self.max_completion_length,
+            padding="longest",
+            return_tensors="pt",
+        )
+        rejected_batch = self.tokenizer.pad(
+            {"input_ids": rejected_inputs},
+            max_length=self.max_completion_length,
+            padding="longest",
+            return_tensors="pt",
+        )
 
-        # custom data collator that does tokenisation on the fly to save mem
-        self.data_collator = OPEDataCollatorWithPadding(
-                pad_token_id=self.processing_class.pad_token_id,
-                label_pad_token_id=args.label_pad_token_id,
-                is_encoder_decoder=self.is_encoder_decoder,
-                tokenizer=self.processing_class,
-                tokenize_row=self.tokenize_row,
+        prompt_truncation = (prompt_batch['attention_mask'].all(1) * (prompt_batch['input_ids'].shape[1] == self.max_prompt_length)).float().mean()
+        chosen_truncation = (chosen_batch['attention_mask'].all(1) * (chosen_batch['input_ids'].shape[1] == self.max_completion_length)).float().mean()
+        rejected_truncation = (rejected_batch['attention_mask'].all(1) * (rejected_batch['input_ids'].shape[1] == self.max_completion_length)).float().mean()
+        if prompt_truncation>0:
+            logger.debug(
+                f"Batch Prompts were truncated to {self.max_prompt_length} tokens for {prompt_truncation:.2%} of samples. Consider increasing max_prompt_length."
+            )
+        if chosen_truncation>0:
+            logger.debug(
+                f"Batch Chosen were truncated to {self.max_completion_length} tokens for {chosen_truncation:.2%} of samples. Consider increasing max_completion_length."
+            )
+        if rejected_truncation>0:
+            logger.debug(
+                f"Batch Rejected were truncated to {self.max_completion_length} tokens for {rejected_truncation:.2%} of samples. Consider increasing max_completion_length."
             )
 
-        if args.remove_unused_columns:
-            args.remove_unused_columns = False
-            # warn users
-            warnings.warn(
-                "When using OPEDataCollatorWithPadding, you should set `remove_unused_columns=False` in your TrainingArguments"
-                " we have set it for you, but you should do it yourself in the future.",
-                UserWarning,
-            )
-
-    @staticmethod
-    def get_batch_logps(
-        logits: torch.FloatTensor,
-        labels: torch.LongTensor,
-        label_pad_token_id: int = -100,
-        is_encoder_decoder: bool = False,
-    ) -> Tuple[torch.FloatTensor, torch.LongTensor]:
-        """
-        We modify this to return the logps and mask without reducing them
-        """
-        if logits.shape[:-1] != labels.shape:
-            raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
-
-        if not is_encoder_decoder:
-            labels = labels[:, 1:].clone()
-            logits = logits[:, :-1, :]
-        loss_mask = labels != label_pad_token_id
-
-        # dummy token; we'll ignore the losses on these tokens later
-        labels[labels == label_pad_token_id] = 0
-
-        per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2)
-
-        return per_token_logps, loss_mask
+        return {
+            "prompt_input_ids": prompt_batch["input_ids"],
+            "prompt_attention_mask": prompt_batch["attention_mask"],
+            "chosen_input_ids": chosen_batch["input_ids"],
+            "chosen_attention_mask": chosen_batch["attention_mask"],
+            "rejected_input_ids": rejected_batch["input_ids"],
+            "rejected_attention_mask": rejected_batch["attention_mask"],
+            "prompt_truncation": prompt_truncation,
+            "chosen_truncation": chosen_truncation,
+            "rejected_truncation": rejected_truncation,
+        }
 
 
-    def concatenated_forward(
-        self, model, batch):
-        """
-        We modify this to simply return the logps and mask without reducing them
-        """
+def concatenated_inputs(
+    batch: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    output: dict[str, torch.Tensor] = {}
+    # duplicate prompt
+    output["prompt_input_ids"] = torch.cat(
+        [batch["prompt_input_ids"], batch["prompt_input_ids"]], dim=0
+    )
+    output["prompt_attention_mask"] = torch.cat(
+        [batch["prompt_attention_mask"], batch["prompt_attention_mask"]], dim=0
+    )
+    # Grab the raw chosen/rejected pairs
+    chosen_ids = batch["chosen_input_ids"]
+    rejected_ids = batch["rejected_input_ids"]
+    chosen_mask = batch["chosen_attention_mask"]
+    rejected_mask = batch["rejected_attention_mask"]
+    # compute a common max‐completion length
+    m = max(chosen_ids.size(1), rejected_ids.size(1))
 
-        concatenated_batch = self.concatenated_inputs(
-            batch,
-            is_encoder_decoder=self.is_encoder_decoder,
-            # is_vision_model=self.is_vision_model,
-            label_pad_token_id=self.label_pad_token_id,
-            padding_value=self.padding_value,
-            device=self.accelerator.device,
-        )
-        len_chosen = batch["chosen_labels"].shape[0]
+    # right-pad both to length m (pad_token_id=0 here; adjust if yours is different)
+    def pad_right(t: torch.Tensor, length: int, pad_val: int):
+        pad_amt = length - t.size(1)
+        return F.pad(t, (0, pad_amt), value=pad_val)
 
-        model_kwargs = {}
+    chosen_ids = pad_right(chosen_ids, m, pad_val=0)
+    rejected_ids = pad_right(rejected_ids, m, pad_val=0)
+    chosen_mask = pad_right(chosen_mask, m, pad_val=0)
+    rejected_mask = pad_right(rejected_mask, m, pad_val=0)
+    # now safe to concat
+    output["completion_input_ids"] = torch.cat((chosen_ids, rejected_ids), dim=0)
+    output["completion_attention_mask"] = torch.cat((chosen_mask, rejected_mask), dim=0)
+    return output
 
-        if self.is_encoder_decoder:
-            model_kwargs["labels"] = concatenated_batch["concatenated_labels"]
-            model_kwargs["decoder_input_ids"] = concatenated_batch.pop("concatenated_decoder_input_ids", None)
 
-        outputs = model(
-            concatenated_batch["concatenated_input_ids"],
-            attention_mask=concatenated_batch["concatenated_attention_mask"],
-            use_cache=False,
-            **model_kwargs,
-        )
-        all_logits = outputs.logits
+def concatenated_forward(
+    model: nn.Module,
+    batch: dict[str, Union[list, torch.LongTensor]],
+    device=None,
+    dtype=None,
+) -> dict[str, Float[Tensor, "b t"]]:
+    """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
 
-        per_token_logps, mask = self.get_batch_logps(
-            all_logits,
-            concatenated_batch["concatenated_labels"],
-            # average_log_prob=self.loss_type == "ipo",
-            is_encoder_decoder=self.is_encoder_decoder,
-            label_pad_token_id=self.label_pad_token_id,
-        )
+    We do this to avoid doing two forward passes, because it's faster for FSDP.
+    """
+    num_examples = batch["prompt_input_ids"].shape[0]
 
-        chosen_t_logps = per_token_logps[:len_chosen]
-        rejected_t_logps = per_token_logps[len_chosen:]
+    concatenated_batch = concatenated_inputs(batch)
 
-        chosen_mask = mask[:len_chosen]
-        rejected_mask = mask[len_chosen:]
+    model_kwargs = {"use_cache": False}
 
-        return (chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
+    if device is None:
+        device = str(next(model.parameters()).device)
+    if dtype is None:
+        dtype = next(model.parameters()).dtype
+    concatenated_batch = {k: v.to(device) for k, v in concatenated_batch.items()}
+
+    prompt_input_ids = concatenated_batch["prompt_input_ids"]
+    prompt_attention_mask = concatenated_batch["prompt_attention_mask"]
+    completion_input_ids = concatenated_batch["completion_input_ids"]
+    completion_attention_mask = concatenated_batch["completion_attention_mask"]
+
+    # Concatenate the prompt and completion inputs
+    input_ids = torch.cat((prompt_input_ids, completion_input_ids), dim=1)
+    attention_mask = torch.cat(
+        (prompt_attention_mask, completion_attention_mask), dim=1
+    )
+    # Mask the prompt but not the completion for the loss
+    loss_mask = torch.cat(
+        (torch.zeros_like(prompt_attention_mask), completion_attention_mask),
+        dim=1,
+    )
+
+    # Flush left to reduce the memory usage
+    # [[0, 0, x, x, x, x],  ->  [[x, x, x, x],
+    #  [0, x, x, x, 0, 0]]       [x, x, x, 0]]
+    attention_mask, input_ids, loss_mask = flush_left(
+        attention_mask, input_ids, loss_mask
+    )
+
+    model_kwargs["attention_mask"] = attention_mask
+
+    with torch.autocast(device, dtype):
+        outputs = model(input_ids, **model_kwargs)
+    logits = outputs.logits
+
+    # Offset the logits by one to align with the labels
+    labels = torch.roll(input_ids, shifts=-1, dims=1)
+    loss_mask = torch.roll(loss_mask, shifts=-1, dims=1).bool()
+
+    # Compute the log probabilities of the labels
+    labels[~loss_mask] = 0  # dummy token; we'll ignore the losses on these tokens later
+    logprobs = logits.log_softmax(-1)
+    per_token_logps = torch.gather(logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+    per_token_logps[~loss_mask] = 0
+    per_token_logps = torch.roll(per_token_logps, shifts=1, dims=1)
+
+
+
+    output = {}
+
+    # as in Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
+    # we are measuring how concentrated the model is for this token, over the vocabulary
+    logp_vocab_conc =  torch.logsumexp(2 * logprobs, dim=-1) # same as sum(probs**2) in log space
+    output["logp_vocab_conc_c"] = logp_vocab_conc[:num_examples][:, prompt_input_ids.shape[1]:]
+    output["logp_vocab_conc_r"] = logp_vocab_conc[num_examples:][:, prompt_input_ids.shape[1:]]
+    
+    # output['chosen_input_ids'] = concatenated_batch["completion_input_ids"][:num_examples]
+    # output['rejected_input_ids'] = concatenated_batch["completion_input_ids"][num_examples:]
+    # output['prompt_input_ids'] = concatenated_batch["prompt_input_ids"]
+    # output['prompt_attention_mask'] = concatenated_batch["prompt_attention_mask"]
+
+
+    # TODO do I want to remove the prompt length
+    prompt_length = prompt_input_ids.shape[1]
+    output['cho_input_ids'] = input_ids[:num_examples][:, prompt_length:]
+    output['rej_input_ids'] = input_ids[num_examples:][:, prompt_length:]
+    output['attention_mask'] = attention_mask[:, prompt_length:]
+    
+    output['chosen_logits'] = logits[:num_examples][:, prompt_length:]
+    output['rejected_logits'] = logits[num_examples:][:, prompt_length:]
+    output["chosen_logps"] = per_token_logps[:num_examples][:, prompt_length:]
+    output["rejected_logps"] = per_token_logps[num_examples:][:, prompt_length:]
+
+    mean_chosen_logits = logits[:num_examples][loss_mask[:num_examples]].mean()
+    mean_rejected_logits = logits[num_examples:][loss_mask[num_examples:]].mean()
+
+    output["mean_chosen_logits"] = mean_chosen_logits
+    output["mean_rejected_logits"] = mean_rejected_logits
+    output["chosen_mask"] = loss_mask[:num_examples][:, prompt_length:]
+    output["rejected_mask"] = loss_mask[num_examples:][:, prompt_length:]
+
+    return output
