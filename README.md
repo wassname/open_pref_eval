@@ -1,14 +1,9 @@
-this fork
-- remove trl
-- replace trl classes with plain torch (e.g. pad)
-- performance
-
 # OpenPrefEval: Dead Simple Open LLM Evaluation
 
 Quick evals with no judge. It works like this:
 
 
-```python
+```py
 # get some preference data
 data = [{
   "prompt": "The story began with a cat:",
@@ -16,12 +11,12 @@ data = [{
   "rejected": "The dog ran."
 }]
 
-# we look at the model probabilities for each token
+# we look at the mean model probabilities for tokens similar to [Implicit Preference Optimization (IPO)](https://arxiv.org/abs/2502.16182)
 chosen_tokens = ["The", " cat", " jumped"]
-chosen_probs = [0.9, 0.8, 0.9]
+chosen_probs = mean([0.9, 0.8, 0.9])
 
 rejected_tokens = ["The", " dog", " ran"]
-rejected_probs = [0.9, 0.2, 0.1]
+rejected_probs = mean([0.9, 0.2, 0.1])
 
 # At the point which the completions diverge we see which is more probable
 chosen_probs[1]>rejected_probs[1] # True
@@ -70,29 +65,19 @@ See more [./examples/evaluate_gpt2.ipynb](./examples/evaluate_gpt2.ipynb)
   - [x] push mmlu and ethics to huggingface and commit gen notebooks
 - [x] improve radar plot
 - [x] look at the best way to extract probs (ipo, dpo, first diverging token, brier score, calbirated probs etc)
-  - [x] filter out attentio mask
+  - [x] filter out attention mask
   - [ ] filter out attention sinks? special tokens? 
   - [ ] ~~add option to calibrate~~ doesn't work
 - [x] GENIES generalisation datasets
 TODO
-- try WPO https://arxiv.org/html/2406.11827v2
-- adapt to new TRL
-- abandon TRL and just make a very simple, like the 
+- [x] try WPO https://arxiv.org/html/2406.11827v2
+- [x] adapt to new TRL
+- [x] abandon TRL and just make a very simple, like the 
   - https://github.com/Eclectic-Sheep/sheeprlhf/blob/efa765089c3cce1e40c5f9a39fa7d43e002738b6/sheeprlhf/loss/dpo.py#L21
   - https://github.com/eric-mitchell/direct-preference-optimization
 
 ## FAQ
 
-Q: Why use the weighted prob over all the tokens?
-
-A: This gives the best accuracy contrast. And it best shows things like generalisation.
-
-
- It also provides scores that correspond with the accuracy. See this [notebook]([./examples/evaluate_gpt2.ipynb](https://github.com/wassname/open_pref_eval/blob/scratch_full_logits/examples/scratch_hs2.ipynb)) for more details. In the following plot of Llama-7b on a simple sentiment prediction task, we expect high accuracy, and indeed we see it for "1st_diverg", which is the method we use in this repository.
-
- TODO: add follow up experiments using GENIES adapters I made
-
- ![comparing_various_token_aggregations](./docs/img/comparing_various_token_aggregations.png)
 
 Q: Why preference datasets?
 
@@ -101,3 +86,4 @@ A: It's simple, it lets us standardize on a format that is already used in RLHF,
 Q: Why use this library?
 
 A: I've found other evaluations to be slow and hard to modify. As a result, people hardly use them. This is an attempt to make measurement fast, hackable, and simple. If we can all measure more, we will all learn more.
+
