@@ -27,7 +27,7 @@ def out(clogp, rlogp):
     return {
         'sigmoid': torch.sigmoid(clogp - rlogp),
         'logratio': clogp - rlogp,
-        'correct': clogp > rlogp,
+        'correct': clogp.exp() > rlogp.exp(),
         # 'prob': clogp.exp() / (clogp.exp() + rlogp.exp()), # same as sigmoid
     }
 
@@ -143,22 +143,22 @@ def score_weighted_prob(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t
     return out(cs.log(), rs.log())
 
     
-def score_with_entropy_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_with_entropy_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, alpha=1):
     # here we downweight uncertain tokens. E.g. if it's low prob because everything is low, we want to reduce its impact
     # Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
     # https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L1197
-    logp_c_adjusted = logp_c - logp_vocab_conc_c
+    logp_c_adjusted = logp_c - logp_vocab_conc_c * alpha
     logp_c_w = (logp_c_adjusted * mask_c).sum(-1) / mask_c.sum(-1)
-    logp_r_adjusted = logp_r - logp_vocab_conc_r
+    logp_r_adjusted = logp_r - logp_vocab_conc_r * alpha
     logp_r_w = (logp_r_adjusted * mask_r).sum(-1) / mask_r.sum(-1)
     return out(logp_c_w, logp_r_w)
 
-def score_confidence_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_confidence_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, T=1.0):
     # Convert concentration to confidence weights (higher concentration = lower confidence)
     # Use softmax to normalize across sequence
-    conf_c = torch.softmax(-logp_vocab_conc_c, dim=-1) * mask_c
-    conf_r = torch.softmax(-logp_vocab_conc_r, dim=-1) * mask_r
-    
+    conf_c = torch.softmax(-logp_vocab_conc_c/T, dim=-1) * mask_c * T
+    conf_r = torch.softmax(-logp_vocab_conc_r/T, dim=-1) * mask_r * T
+
     # Weight the log probabilities by confidence
     weighted_logp_c = (logp_c * conf_c * mask_c).sum(-1) / (conf_c * mask_c).sum(-1)
     weighted_logp_r = (logp_r * conf_r * mask_r).sum(-1) / (conf_r * mask_r).sum(-1)
@@ -283,7 +283,7 @@ def score_power_mean(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_voc
     return out(score_c.log(), score_r.log())
 
 
-def score_entropy_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
+def score_seq_entropy_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
     # Need to handle zeros in p to avoid nan
     p_c = torch.exp(logp_c) * mask_c + 1e-10
     p_r = torch.exp(logp_r) * mask_r + 1e-10

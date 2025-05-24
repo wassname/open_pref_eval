@@ -17,12 +17,12 @@ from transformers import (
 from .datasets import Dataset, ds2name, get_default_datasets
 from .helpers.mem import clear_mem
 from .helpers.peft import is_peft_model, set_adapter
-from .scoring import score_weighted, score_ipo
+from .scoring import score_with_entropy_weight
 from .trainer import DataCollatorForPreference, concatenated_forward
 
 
 def extract_logps(
-    model, batch, step: int, score_fn: Callable = score_ipo, include_raw=False
+    model, batch, step: int, score_fn: Callable = score_with_entropy_weight, include_raw=False
 ):
     bs = batch["chosen_input_ids"].shape[0]
     i = bs * step + torch.arange(bs)
@@ -230,7 +230,7 @@ def evaluate_model(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     datasets: List[Dataset],
-    score_fn=score_ipo,
+    score_fn=score_with_entropy_weight,
     verbose=1,
     **kwargs,
 ) -> pd.DataFrame:
