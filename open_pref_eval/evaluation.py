@@ -6,6 +6,7 @@ import torch
 from datasets import Dataset, concatenate_datasets, load_dataset
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from loguru import logger
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -16,12 +17,12 @@ from transformers import (
 from .datasets import Dataset, ds2name, get_default_datasets
 from .helpers.mem import clear_mem
 from .helpers.peft import is_peft_model, set_adapter
-from .scoring import score_weighted
+from .scoring import score_weighted, score_ipo
 from .trainer import DataCollatorForPreference, concatenated_forward
 
 
 def extract_logps(
-    model, batch, step: int, score_fn: Callable = score_weighted, include_raw=False
+    model, batch, step: int, score_fn: Callable = score_ipo, include_raw=False
 ):
     bs = batch["chosen_input_ids"].shape[0]
     i = bs * step + torch.arange(bs)
@@ -36,10 +37,38 @@ def extract_logps(
     rejected_t_logps = forward_output["rejected_logps"]
     chosen_mask = forward_output["chosen_mask"]
     rejected_mask = forward_output["rejected_mask"]
+    logp_vocab_conc_c = forward_output["logp_vocab_conc_c"]
+    logp_vocab_conc_r = forward_output["logp_vocab_conc_r"]
+    
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
-    prob = score_fn(chosen_t_logps, rejected_t_logps, chosen_mask, rejected_mask)
-    # assert torch.isfinite(prob).all(), f"Prob is not finite: {prob}"
+    outputs = {}
+    if isinstance(score_fn, dict):
+        for k, score_fn in score_fn.items():
+            outputs[f"score_{k}"] = score_fn(
+                chosen_t_logps,
+                rejected_t_logps,
+                chosen_mask,
+                rejected_mask,
+                logp_vocab_conc_c,
+                logp_vocab_conc_r
+            )
+            # assert torch.isfinite(outputs[f"score_{k}"]).all(), f"Score {k} is not finite: {outputs[f'score_{k}']}"
+            assert outputs[f"score_{k}"].shape == (bs,), f"Score {k} has wrong shape: {outputs[f'score_{k}'].shape}"
+        outputs["prob"] = outputs[f"score_{k}"] # use the last one as prob
+    else:
+        outputs["prob"] = score_fn(
+            chosen_t_logps,
+            rejected_t_logps,
+            chosen_mask,
+            rejected_mask,
+            logp_vocab_conc_c,
+            logp_vocab_conc_r,
+        )
+
+    outputs["prob"] = torch.sigmoid(outputs["prob"])
+    outputs["prob"] = outputs["prob"]
+    # assert torch.isfinite(outputs["prob"]).all(), f"Prob is not finite: {outputs['prob']}"
 
     # logprob of whole completion
     chosen_logp = (chosen_t_logps * chosen_mask).sum(1)
@@ -51,24 +80,24 @@ def extract_logps(
 
     # Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
     # per_token_logps = torch.concatenate([chosen_t_logps, rejected_t_logps], dim=0)
+    # WRONG this is mean to be all hs
     adj_cho = torch.logsumexp(
-        2 * chosen_t_logps, dim=-1, keepdim=True
+        2 * forward_output["chosen_logits"].softmax(dim=-1), dim=-1
     )  # same as sum(probs**2) in log space
-    chosen_weights = ((chosen_t_logps - adj_cho) * chosen_mask).sum(
+    chosen_weight_logp = ((chosen_t_logps - adj_cho) * chosen_mask).sum(
         -1
     ) / chosen_mask.sum(-1)
 
     adj_rej = torch.logsumexp(
-        2 * rejected_t_logps, dim=-1, keepdim=True
+        2 * forward_output["rejected_logits"].softmax(dim=-1), dim=-1
     )  # same as sum(probs**2) in log space
-    rejected_weights = ((rejected_t_logps - adj_rej) * rejected_mask).sum(
+    rejected_weight_logp = ((rejected_t_logps - adj_rej) * rejected_mask).sum(
         -1
     ) / rejected_mask.sum(-1)
-    policy_weights = torch.clamp(torch.exp(chosen_weights + rejected_weights), max=1)
+    policy_weights = torch.clamp(torch.exp(chosen_weight_logp + rejected_weight_logp), max=1)
 
     # turn into list of dicts
-    n = dict(
-        prob=prob,
+    outputs.update(
         # debug: logprobs and ppl of completions, can be used to check if coherency is maintained
         _chosen_logps=chosen_logp,
         _rejected_logps=rejected_logp,
@@ -78,9 +107,11 @@ def extract_logps(
         _l_chosen=(batch["chosen_input_ids"] > 0).sum(-1),
         _l_rejected=(batch["rejected_input_ids"] > 0).sum(-1),
         _policy_weights=policy_weights,
+        _chosen_weight_logp=chosen_weight_logp,
+        _rejected_weight_logp=rejected_weight_logp,
     )
     if include_raw:
-        n.update(
+        outputs.update(
             __chosen_logps=chosen_t_logps,
             __rejected_logps=rejected_t_logps,
             __chosen_logits=forward_output["mean_chosen_logits"],
@@ -89,10 +120,13 @@ def extract_logps(
             __rejected_mask=rejected_mask,
         )
         clear_mem()
-    n = {k: v.detach().cpu().numpy() for k, v in n.items()}
+
+    outputs["score_weighted"] = chosen_weight_logp - rejected_weight_logp # custom score
+
+    outputs = {k: v.detach().float().cpu().numpy() for k, v in outputs.items()}
     # metadata
-    n["ds_i"] = i.cpu().numpy()
-    return n
+    outputs["ds_i"] = i.cpu().numpy()
+    return outputs
 
 
 @torch.no_grad()
@@ -153,6 +187,7 @@ def eval_dataset(
             # if model has peft adapters loop through them
             if adapter_names is None:
                 adapter_names: list = [None] + list(model.peft_config.keys())
+                logger.debug(f"Detected adapters: {adapter_names}")
             for adapter_name in adapter_names:
                 with set_adapter(model, adapter_name):
                     d = extract_logps(model, batch, step, **kwargs)
@@ -193,7 +228,7 @@ def evaluate_model(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     datasets: List[Dataset],
-    score_fn=score_weighted,
+    score_fn=score_ipo,
     verbose=1,
     **kwargs,
 ) -> pd.DataFrame:

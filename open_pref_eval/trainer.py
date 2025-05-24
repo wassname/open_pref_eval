@@ -4,6 +4,7 @@ from typing import Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from loguru import logger
 from datasets import Dataset
 from jaxtyping import Float
 from torch import Tensor
@@ -35,7 +36,9 @@ class DataCollatorForPreference(DataCollatorMixin):
             max_length=self.max_prompt_length,
             padding="longest",
             return_tensors="pt",
+            # return_overflowing_tokens=True,
         )
+
 
         # 2) chosen + rejected: first truncate to room for EOS
         self.tokenizer.padding_side = "right"
@@ -46,12 +49,14 @@ class DataCollatorForPreference(DataCollatorMixin):
             add_special_tokens=False,
             truncation=True,
             max_length=comp_max,
+            # return_overflowing_tokens=True,
         )
         tok_reject = self.tokenizer(
             rejects,
             add_special_tokens=False,
             truncation=True,
             max_length=comp_max,
+            # return_overflowing_tokens=True,
         )
         # append EOS
         chosen_inputs = [
@@ -75,6 +80,22 @@ class DataCollatorForPreference(DataCollatorMixin):
             return_tensors="pt",
         )
 
+        prompt_truncation = (prompt_batch['attention_mask'].all(1) * (prompt_batch['input_ids'].shape[1] == self.max_prompt_length)).float().mean()
+        chosen_truncation = (chosen_batch['attention_mask'].all(1) * (chosen_batch['input_ids'].shape[1] == self.max_completion_length)).float().mean()
+        rejected_truncation = (rejected_batch['attention_mask'].all(1) * (rejected_batch['input_ids'].shape[1] == self.max_completion_length)).float().mean()
+        if prompt_truncation>0:
+            logger.debug(
+                f"Batch Prompts were truncated to {self.max_prompt_length} tokens for {prompt_truncation:.2%} of samples. Consider increasing max_prompt_length."
+            )
+        if chosen_truncation>0:
+            logger.debug(
+                f"Batch Chosen were truncated to {self.max_completion_length} tokens for {chosen_truncation:.2%} of samples. Consider increasing max_completion_length."
+            )
+        if rejected_truncation>0:
+            logger.debug(
+                f"Batch Rejected were truncated to {self.max_completion_length} tokens for {rejected_truncation:.2%} of samples. Consider increasing max_completion_length."
+            )
+
         return {
             "prompt_input_ids": prompt_batch["input_ids"],
             "prompt_attention_mask": prompt_batch["attention_mask"],
@@ -82,6 +103,9 @@ class DataCollatorForPreference(DataCollatorMixin):
             "chosen_attention_mask": chosen_batch["attention_mask"],
             "rejected_input_ids": rejected_batch["input_ids"],
             "rejected_attention_mask": rejected_batch["attention_mask"],
+            "prompt_truncation": prompt_truncation,
+            "chosen_truncation": chosen_truncation,
+            "rejected_truncation": rejected_truncation,
         }
 
 
@@ -176,20 +200,44 @@ def concatenated_forward(
 
     # Compute the log probabilities of the labels
     labels[~loss_mask] = 0  # dummy token; we'll ignore the losses on these tokens later
-    per_token_logps = selective_log_softmax(logits, labels)
+    logprobs = logits.log_softmax(-1)
+    per_token_logps = torch.gather(logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     per_token_logps[~loss_mask] = 0
     per_token_logps = torch.roll(per_token_logps, shifts=1, dims=1)
 
+
+
     output = {}
-    output["chosen_logps"] = per_token_logps[:num_examples]
-    output["rejected_logps"] = per_token_logps[num_examples:]
+
+    # as in Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
+    # we are measuring how concentrated the model is for this token, over the vocabulary
+    logp_vocab_conc =  torch.logsumexp(2 * logprobs, dim=-1) # same as sum(probs**2) in log space
+    output["logp_vocab_conc_c"] = logp_vocab_conc[:num_examples][:, prompt_input_ids.shape[1]:]
+    output["logp_vocab_conc_r"] = logp_vocab_conc[num_examples:][:, prompt_input_ids.shape[1:]]
+    
+    # output['chosen_input_ids'] = concatenated_batch["completion_input_ids"][:num_examples]
+    # output['rejected_input_ids'] = concatenated_batch["completion_input_ids"][num_examples:]
+    # output['prompt_input_ids'] = concatenated_batch["prompt_input_ids"]
+    # output['prompt_attention_mask'] = concatenated_batch["prompt_attention_mask"]
+
+
+    # TODO do I want to remove the prompt length
+    prompt_length = prompt_input_ids.shape[1]
+    output['cho_input_ids'] = input_ids[:num_examples][:, prompt_length:]
+    output['rej_input_ids'] = input_ids[num_examples:][:, prompt_length:]
+    output['attention_mask'] = attention_mask[:, prompt_length:]
+    
+    output['chosen_logits'] = logits[:num_examples][:, prompt_length:]
+    output['rejected_logits'] = logits[num_examples:][:, prompt_length:]
+    output["chosen_logps"] = per_token_logps[:num_examples][:, prompt_length:]
+    output["rejected_logps"] = per_token_logps[num_examples:][:, prompt_length:]
 
     mean_chosen_logits = logits[:num_examples][loss_mask[:num_examples]].mean()
     mean_rejected_logits = logits[num_examples:][loss_mask[num_examples:]].mean()
 
     output["mean_chosen_logits"] = mean_chosen_logits
     output["mean_rejected_logits"] = mean_rejected_logits
-    output["chosen_mask"] = loss_mask[:num_examples]
-    output["rejected_mask"] = loss_mask[num_examples:]
+    output["chosen_mask"] = loss_mask[:num_examples][:, prompt_length:]
+    output["rejected_mask"] = loss_mask[num_examples:][:, prompt_length:]
 
     return output

@@ -29,7 +29,8 @@ dev = [
   "tabulate>=0.9",
   "matplotlib>=3.9",
   "pytest>=8.3",
-  "parameterized>=0.9"
+  "parameterized>=0.9",
+  "anycache>=2.4.0",
 ]
 peft = [
   "peft>=0.15.2",

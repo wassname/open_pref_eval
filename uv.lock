@@ -145,6 +145,19 @@ wheels = [
 ]
 
 [[package]]
+name = "anycache"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dill" },
+    { name = "filelock" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a2/2f/780bebd471b5a0fb9f53928d96726c7f17450d4d291a61e1b61988bab09c/anycache-2.4.0.tar.gz", hash = "sha256:99d3da200c7890fc9bba2c6c05470d34789483ed0115ee2885b72753aa235629", size = 11028 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/bb/0750b6253968c97646a5da67d203fa219e2fe1be3ace5e7615a29544e4b9/anycache-2.4.0-py3-none-any.whl", hash = "sha256:8e0fa7ea06e6929446a7805e28780038353a75067a26a4f79df97e886c982ca7", size = 8247 },
+]
+
+[[package]]
 name = "appnope"
 version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1486,6 +1499,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "anycache" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "matplotlib" },
@@ -1515,6 +1529,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "anycache", specifier = ">=2.4.0" },
     { name = "ipykernel", specifier = ">=6.29" },
     { name = "ipywidgets", specifier = ">=8.1" },
     { name = "matplotlib", specifier = ">=3.9" },
