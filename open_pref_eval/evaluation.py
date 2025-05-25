@@ -17,12 +17,12 @@ from transformers import (
 from .datasets import Dataset, ds2name, get_default_datasets
 from .helpers.mem import clear_mem
 from .helpers.peft import is_peft_model, set_adapter
-from .scoring import score_with_entropy_weight
+from .scoring import score_ipo
 from .trainer import DataCollatorForPreference, concatenated_forward
 
 
 def extract_logps(
-    model, batch, step: int, score_fn: Callable = score_with_entropy_weight, include_raw=False
+    model, batch, step: int, score_fn: Callable = score_ipo, include_raw=False
 ):
     bs = batch["chosen_input_ids"].shape[0]
     i = bs * step + torch.arange(bs)
@@ -51,14 +51,14 @@ def extract_logps(
     if isinstance(score_fn, dict):
         for k, score_fn in score_fn.items():
             o = score_fn(
-                chosen_t_logps=chosen_t_logps,
-                rejected_t_logps=rejected_t_logps,
-                chosen_mask=chosen_mask,
-                rejected_mask=rejected_mask,
-                logp_vocab_conc_c=logp_vocab_conc_c,
-                logp_vocab_conc_r=logp_vocab_conc_r,
-                chosen_ranks=chosen_ranks,
-                rejected_ranks=rejected_ranks,
+                log_prob_chosen=chosen_t_logps,
+                log_prob_rejected=rejected_t_logps,
+                mask_chosen=chosen_mask,
+                mask_rejected=rejected_mask,
+                vocab_concentration_chosen=logp_vocab_conc_c,
+                vocab_concentration_rejected=logp_vocab_conc_r,
+                rank_chosen=chosen_ranks,
+                rank_rejected=rejected_ranks,
             )
             o = {f"score_{k}__{kk}": v for kk,v in o.items()}
             for kk, v in o.items():
@@ -67,14 +67,14 @@ def extract_logps(
         outputs["prob"] = outputs[f"score_{k}__sigmoid"] # use the last one as prob
     else:
         o = score_fn(
-            chosen_t_logps=chosen_t_logps,
-            rejected_t_logps=rejected_t_logps,
-            chosen_mask=chosen_mask,
-            rejected_mask=rejected_mask,
-            logp_vocab_conc_c=logp_vocab_conc_c,
-            logp_vocab_conc_r=logp_vocab_conc_r,
-            chosen_ranks=chosen_ranks,
-            rejected_ranks=rejected_ranks,
+            log_prob_chosen=chosen_t_logps,
+            log_prob_rejected=rejected_t_logps,
+            mask_chosen=chosen_mask,
+            mask_rejected=rejected_mask,
+            vocab_concentration_chosen=logp_vocab_conc_c,
+            vocab_concentration_rejected=logp_vocab_conc_r,
+            rank_chosen=chosen_ranks,
+            rank_rejected=rejected_ranks,
         )
         o = {f"score__{kk}": v for kk, v in o.items()}
         outputs.update(o)
@@ -204,8 +204,8 @@ def eval_dataset(
             for adapter_name in adapter_names:
                 with set_adapter(model, adapter_name):
                     d = extract_logps(model, batch, step, **kwargs)
-                    adapter_name if adapter_name is not None else "base"
-                    d["adapter"] = [adapter_name] * len(d["prob"])
+                    adapter_name2 = adapter_name if adapter_name is not None else "base"
+                    d["adapter"] = [adapter_name2] * len(d["prob"])
                     data.append(d)
         else:
             d = extract_logps(model, batch, step, **kwargs)
@@ -242,7 +242,7 @@ def evaluate_model(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     datasets: List[Dataset],
-    score_fn=score_with_entropy_weight,
+    score_fn=score_ipo,
     verbose=1,
     **kwargs,
 ) -> pd.DataFrame:

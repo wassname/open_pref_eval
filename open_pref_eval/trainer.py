@@ -141,6 +141,41 @@ def concatenated_inputs(
     return output
 
 
+def gather_ranks(logprobs, labels, loss_mask):
+    # More memory-efficient rank calculation
+    # Only compute ranks for positions where we need them (loss_mask is True)
+    batch_size, seq_len, vocab_size = logprobs.shape
+    
+    # Get label logprobs for comparison
+    label_logprobs = torch.gather(logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+    
+    # Initialize ranks tensor
+    per_token_ranks = torch.zeros_like(labels, dtype=torch.long)
+    
+    # Only compute ranks where loss_mask is True to save memory
+    valid_positions = loss_mask.nonzero(as_tuple=False)
+    
+    if len(valid_positions) > 0:
+        # Process in smaller chunks to avoid OOM
+        chunk_size = min(1000, len(valid_positions))
+        
+        for chunk_start in range(0, len(valid_positions), chunk_size):
+            chunk_end = min(chunk_start + chunk_size, len(valid_positions))
+            chunk_positions = valid_positions[chunk_start:chunk_end]
+            
+            for i in range(len(chunk_positions)):
+                batch_idx, seq_idx = chunk_positions[i]
+                label_logprob = label_logprobs[batch_idx, seq_idx]
+                
+                # Count how many tokens have higher logprob (more efficient than full sort)
+                position_logprobs = logprobs[batch_idx, seq_idx]
+                rank = (position_logprobs > label_logprob).sum().item() + 1
+                per_token_ranks[batch_idx, seq_idx] = rank
+    
+    per_token_ranks[~loss_mask] = 0  # Set rank to 0 for masked tokens
+    per_token_ranks = torch.roll(per_token_ranks, shifts=1, dims=1)
+    return per_token_ranks
+
 def concatenated_forward(
     model: nn.Module,
     batch: dict[str, Union[list, torch.LongTensor]],
@@ -196,27 +231,9 @@ def concatenated_forward(
     per_token_logps[~loss_mask] = 0
     per_token_logps = torch.roll(per_token_logps, shifts=1, dims=1)
 
-    def gather_ranks(logprobs, labels, loss_mask):
-
-        # Compute token ranks (1-indexed, where 1 is the highest probability token)
-        # Sort logprobs in descending order and find where each label token ranks
-        sorted_indices = torch.argsort(logprobs, dim=-1, descending=True)
-        vocab_size = logprobs.shape[-1]
-        
-        # Create a tensor that maps from token_id to its rank
-        ranks = torch.empty_like(sorted_indices)
-        ranks.scatter_(dim=-1, index=sorted_indices, src=torch.arange(1, vocab_size + 1, device=logprobs.device).expand_as(sorted_indices))
-        
-        # Gather the ranks for our specific label tokens
-        per_token_ranks = torch.gather(ranks, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
-        per_token_ranks[~loss_mask] = 0  # Set rank to 0 for masked tokens
-        per_token_ranks = torch.roll(per_token_ranks, shifts=1, dims=1)
-        return per_token_ranks
     per_token_ranks = gather_ranks(logprobs, labels, loss_mask)
 
     output = {}
-
-
 
     # as in Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
     # we are measuring how concentrated the model is for this token, over the vocabulary
