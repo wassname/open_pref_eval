@@ -1,4 +1,4 @@
-# OpenPrefEval: Dead Simple Open LLM Evaluation
+# open_pref_eval: Dead Simple Open LLM Evaluation
 
 Quick evals with no judge. It works like this:
 
@@ -13,7 +13,7 @@ data = [{
 
 # we look at the mean model probabilities for tokens similar to [Implicit Preference Optimization (IPO)](https://arxiv.org/abs/2502.16182)
 chosen_tokens = ["The", " cat", " jumped"]
-chosen_probs = mean([0.9, 0.8, 0.9])
+chosen_probs = mean([0.9, 0.8, 0.9]) # TODO this shows ppx/ipo, is this my final one?
 
 rejected_tokens = ["The", " dog", " ran"]
 rejected_probs = mean([0.9, 0.2, 0.1])
