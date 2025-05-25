@@ -172,13 +172,6 @@ A: Yes! Any dataset with `prompt`, `chosen`, `rejected` columns works. See `exam
 | Feature | open_pref_eval | [LM-Eval-Harness](https://github.com/EleutherAI/lm-evaluation-harness) | [LightEval](https://github.com/huggingface/lighteval) | [Prometheus](https://github.com/prometheus-eval/prometheus-eval) | [Verdict](https://github.com/haizelabs/verdict) | [HELM](https://github.com/stanford-crfm/helm) |
 |---------|----------------|-----------------|-----------|------------|---------|------|
 | **Judge Required** | ❌ | ❌ | Optional | ✅ (own models) | ✅ | Optional |
-| **API Dependencies** | ❌ | Optional | Optional | ❌ | ✅ | Optional |
-| **Local-first** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
-| **Preference Focus** | ✅ | ❌ | ❌ | ✅ | ✅ | Partial |
-| **Academic Benchmarks** | ❌ | ✅ | ✅ | Partial | ❌ | ✅ |
-| **Custom Tasks** | ✅ (datasets) | ✅ | ✅ | ✅ | ✅ | Limited |
-| **Batch Processing** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Result Export** | CSV/JSON | JSON/CSV | Multiple | JSON | Multiple | Multiple |
 
 
 
