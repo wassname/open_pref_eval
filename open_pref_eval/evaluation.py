@@ -174,6 +174,7 @@ def eval_dataset(
     max_length: Optional[int] = 1024,
     batch_size: int = 2,
     verbose: int = 1,
+    num_workers=0,
     **kwargs,
 ) -> pd.DataFrame:
     """Evaluate model on a preference dataset.
@@ -216,7 +217,7 @@ def eval_dataset(
         dataset,
         batch_size=batch_size,
         collate_fn=data_collator,
-        num_workers=0,
+        num_workers=num_workers,
         shuffle=False,
         drop_last=False,
     )
