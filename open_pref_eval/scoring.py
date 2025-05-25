@@ -346,8 +346,8 @@ def score_rank_based(
 ) -> dict:
     """Score using token ranks instead of log probabilities."""
     # Convert ranks to log space and average
-    chosen_score = (torch.log(rank_chosen + EPS) * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
-    rejected_score = (torch.log(rank_rejected + EPS) * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
+    chosen_score = -(torch.log(rank_chosen + EPS) * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
+    rejected_score = -(torch.log(rank_rejected + EPS) * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
     
     return build_output_dict(chosen_score, rejected_score)
 

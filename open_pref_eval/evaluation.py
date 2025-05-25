@@ -235,13 +235,13 @@ def eval_dataset(
             for adapter_name in adapter_names:
                 with set_adapter(model, adapter_name):
                     batch_results = extract_logps(model, batch, step, **kwargs)
-                    adapter_name_clean = adapter_name if adapter_name is not None else "base"
+                    adapter_name_clean = adapter_name if adapter_name is not None else "none"
                     batch_results["adapter"] = [adapter_name_clean] * len(batch_results["prob"])
                     evaluation_data.append(batch_results)
         else:
             # Standard model evaluation
             batch_results = extract_logps(model, batch, step, **kwargs)
-            batch_results["adapter"] = [""] * len(batch_results["prob"])  # no adapter
+            batch_results["adapter"] = ["none"] * len(batch_results["prob"])  # no adapter
             evaluation_data.append(batch_results)
 
     # Concatenate all batch results into a single DataFrame
@@ -257,6 +257,7 @@ def eval_dataset(
 
     # Add derived columns
     df["correct"] = df["prob"] > 0.5
+    df.fillna({'adapter': 'none'}, inplace=True)
     df["model"] = model.config._name_or_path + df['adapter']
     df["dataset"] = dataset_name
 
