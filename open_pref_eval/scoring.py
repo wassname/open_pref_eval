@@ -1,343 +1,368 @@
-
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-from typing import Optional, List, Union
-from collections import OrderedDict
-import numpy as np
-from jaxtyping import Float, Int
 
-def log_norm(x, mask):
-    # mask out padding as -inf so it gets zero weight
-    x = x.masked_fill(mask == 0, float('-inf'))
-    # subtract logsumexp to normalize in log-space
-    return x - torch.logsumexp(x, dim=-1, keepdim=True)
+EPS = 1e-8
 
-def norm(x, mask, eps=1e-8):
-    # no need to use mask as it's log
-    x = x - x.min(-1, keepdim=True)[0]
-    return x / (x.sum(-1, keepdim=True)+eps)
+# ============================================================================
+# Core Utility Functions
+# ============================================================================
 
-def out(clogp, rlogp):
-    # max_logp = torch.maximum(clogp, rlogp)
-    # exp_c = torch.exp(clogp - max_logp)
-    # exp_r = torch.exp(rlogp - max_logp)
-    # return exp_c / (exp_c + exp_r)
-    # return torch.sigmoid(clogp - rlogp)
+def build_output_dict(chosen_log_score: Tensor, rejected_log_score: Tensor) -> dict:
+    """Build standardized output dictionary from log scores."""
+    log_ratio = chosen_log_score - rejected_log_score
     return {
-        'sigmoid': torch.sigmoid(clogp - rlogp),
-        'logratio': clogp - rlogp,
-        'correct': clogp.exp() > rlogp.exp(),
-        # 'prob': clogp.exp() / (clogp.exp() + rlogp.exp()), # same as sigmoid
+        'sigmoid': torch.sigmoid(log_ratio),
+        'log_ratio': log_ratio,
+        'correct': chosen_log_score > rejected_log_score,
+        'chosen_log_score': chosen_log_score,
+        'rejected_log_score': rejected_log_score,
     }
 
+def log_softmax_normalize(log_values: Tensor, mask: Tensor) -> Tensor:
+    """Normalize log values using log-softmax, masking out padding tokens."""
+    masked_log_values = log_values.masked_fill(mask == 0, float('-inf'))
+    return masked_log_values - torch.logsumexp(masked_log_values, dim=-1, keepdim=True)
 
-def score_agg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, agg=np.min):
+def prob_normalize(values: Tensor, mask: Tensor) -> Tensor:
+    """Normalize probability values, handling masked tokens."""
+    masked_values = values * mask
+    return masked_values / (masked_values.sum(-1, keepdim=True) + EPS)
 
-    """
-    calculate if the chosen completion is higher than the rejected, using the AGG logprob of the sequence. Where agg could be min, max, mean, sum, first, last, etc.
-    """
-    # get the total logprob of the completion
-    c = agg(logp_c * mask_c)
-    r = agg(logp_r * mask_r)
-
-    # and the ratio in logspace
-    logratio = c - r
-
-    return out(c, r)
-
-
-def first_nonzero(x: Float[Tensor, 'b t'], dim=1) -> Float[Tensor, 'b']:
-    """get the first non zero element in a tensor"""
+def first_nonzero_index(x: Tensor, dim: int = 1) -> Tensor:
+    """Get the first non-zero element in a tensor along the specified dimension."""
     return x[torch.arange(x.shape[0]), (x != 0).float().argmax(dim=dim)]
 
-def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    """
-    calculate if the chosen completion is higher than the rejected, using first divering token. This gives a contrasting signal, but it's noisy.
+def get_exp_cap(value: Tensor, decimal: int = 4) -> Tensor:
+    """Get the exponent cap to avoid overflow when calling torch.exp."""
+    dtype_max = torch.finfo(value.dtype).max
+    log_max = torch.log(torch.tensor(dtype_max, dtype=value.dtype, device=value.device))
+    return torch.floor(log_max * 10**decimal) / 10**decimal if decimal > 0 else log_max
 
-    """
-    c = first_nonzero(logp_c * mask_c)
-    r = first_nonzero(logp_r * mask_r)
-    return out(c, r)
+def safe_exp(log_values: Tensor, cap: float = -1) -> Tensor:
+    """Safely compute exp with clamping to avoid overflow."""
+    if cap < 0:
+        cap = get_exp_cap(log_values)
+    return torch.exp(torch.clamp(log_values, max=cap))
 
-def score_preferences(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    """
-    calculate if the chosen completion is higher than the rejected, using DPO
+# ============================================================================
+# Basic Scoring Functions
+# ============================================================================
 
-    this has a problem is one string is longer than the other, or when some token are very low prob
-    """
-    # get the total logprob of the completion
-    # maxl = min(logp_c.shape[1], logp_r.shape[1]) # FIXME need to ignore padding
-    maxl = max(mask_c.sum(-1).max(), mask_r.sum(-1).max()).long()
-    c = (logp_c * mask_c)[:, :maxl].sum(-1)
-    r = (logp_r * mask_r)[:, :maxl].sum(-1)
-
-    return out(c, r)
-
-
-def score_ipo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    """
-    IPO loss from the [IPO](https://huggingface.co/papers/2310.12036) paper.
-    Unlike preference loss which takes the combined prob of the whole sequence, this takes the mean prob of each token. This gives a pretty good signal.
-    """
-    # get the avg logprob of the completion
-    c = (logp_c * mask_c).sum(-1) / mask_c.sum(-1)
-    r = (logp_r * mask_r).sum(-1) / mask_r.sum(-1)
-
-    return out(c, r)
-
-
-def score_cumsum(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    # get the avg logprob over the cumulative logprob of each token, this means the initial tokens are weighted higher, but all tokens have an influence
-    eps = 1e-8
-    cumsum_c = (logp_c * mask_c).cumsum(-1)
-    # Weight by position (early tokens get higher weight)
-    c = (cumsum_c * mask_c).sum(-1) / (mask_c.sum(-1) + eps)
-
-    cumsum_r = (logp_r * mask_r).cumsum(-1)
-    r = (cumsum_r * mask_r).sum(-1) / (mask_r.sum(-1) + eps)
-
-    return out(c, r)
-
-
-def score_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    """Weight by cumulative logprob."""
-    eps = 1e-8
+def score_log_prob_sum(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score using sum of log probabilities (standard DPO)."""
+    # Sum log probabilities over sequence length, respecting masks
+    chosen_score = (log_prob_chosen * mask_chosen).sum(-1)
+    rejected_score = (log_prob_rejected * mask_rejected).sum(-1)
     
-    logp_cm = (logp_c * mask_c)
-    logp_rm = (logp_r * mask_r)
+    return build_output_dict(chosen_score, rejected_score)
 
-    # get weights
-    logp_cmcs = logp_cm.cumsum(-1) * mask_c
-    logp_rmcs = logp_rm.cumsum(-1) * mask_r
-
-    c_w = log_norm(logp_cmcs, mask_c) * mask_c
-    r_w = log_norm(logp_rmcs, mask_r) * mask_r
-
-    cs = (logp_cm * c_w * mask_c).nansum(-1) / (c_w.nansum(-1) + eps)
-    rs = (logp_rm * r_w * mask_r).nansum(-1) / (r_w.nansum(-1) + eps)
-
-    # FIXME this is somehow coming out -12 to 12
-    return out(cs, rs)
-
-def score_weighted_prob(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    """Weight by cumulative prob."""
-    eps = 1e-8
+def score_log_prob_mean(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score using mean log probabilities (IPO-style)."""
+    chosen_score = (log_prob_chosen * mask_chosen).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)
+    rejected_score = (log_prob_rejected * mask_rejected).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)
     
-   # Apply exp to log probabilities and mask
-    p_c = torch.exp(logp_c) * mask_c
-    p_r = torch.exp(logp_r) * mask_r
+    return build_output_dict(chosen_score, rejected_score)
 
-    # Calculate cumulative sum of probabilities
-    cum_p_c = torch.cumprod(p_c, dim=1)
-    cum_p_r = torch.cumprod(p_r, dim=1)
-
-    cum_p_c = norm(cum_p_c, mask_c) * mask_c
-    cum_p_r = norm(cum_p_r, mask_r) * mask_r
-
-    # Calculate weighted mean
-    cs = torch.sum(p_c * cum_p_c * mask_c, dim=1) / (cum_p_c.sum(-1) + eps)
-    rs = torch.sum(p_r * cum_p_r * mask_r, dim=1) / (cum_p_r.sum(-1) + eps)
-
-    # return uncalibrated probability
-    return out(cs.log(), rs.log())
-
+def score_first_diverging_token(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score using first non-zero (diverging) token log probability."""
+    chosen_score = first_nonzero_index(log_prob_chosen * mask_chosen)
+    rejected_score = first_nonzero_index(log_prob_rejected * mask_rejected)
     
-def score_with_entropy_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, alpha=1):
-    # here we downweight uncertain tokens. E.g. if it's low prob because everything is low, we want to reduce its impact
-    # Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
-    # https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L1197
-    logp_c_adjusted = logp_c - logp_vocab_conc_c * alpha
-    logp_c_w = (logp_c_adjusted * mask_c).sum(-1) / mask_c.sum(-1)
-    logp_r_adjusted = logp_r - logp_vocab_conc_r * alpha
-    logp_r_w = (logp_r_adjusted * mask_r).sum(-1) / mask_r.sum(-1)
-    return out(logp_c_w, logp_r_w)
+    return build_output_dict(chosen_score, rejected_score)
 
-def score_confidence_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, T=1.0):
-    # Convert concentration to confidence weights (higher concentration = lower confidence)
-    # Use softmax to normalize across sequence
-    conf_c = torch.softmax(-logp_vocab_conc_c/T, dim=-1) * mask_c * T
-    conf_r = torch.softmax(-logp_vocab_conc_r/T, dim=-1) * mask_r * T
+def score_position_weighted(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    decay: float = 0.9,
+    **kwargs
+) -> dict:
+    """Score with exponential position decay (earlier tokens matter more)."""
+    seq_len = log_prob_chosen.shape[1]
+    decay_weights = torch.pow(decay, torch.arange(seq_len, device=log_prob_chosen.device)).unsqueeze(0)
+    
+    chosen_score = (log_prob_chosen * mask_chosen * decay_weights).sum(-1) / (mask_chosen * decay_weights).sum(-1).clamp(min=EPS)
+    rejected_score = (log_prob_rejected * mask_rejected * decay_weights).sum(-1) / (mask_rejected * decay_weights).sum(-1).clamp(min=EPS)
+    
+    return build_output_dict(chosen_score, rejected_score)
 
-    # Weight the log probabilities by confidence
-    weighted_logp_c = (logp_c * conf_c * mask_c).sum(-1) / (conf_c * mask_c).sum(-1)
-    weighted_logp_r = (logp_r * conf_r * mask_r).sum(-1) / (conf_r * mask_r).sum(-1)
+def score_cumulative_weighted(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score weighted by cumulative log probability."""
+    cumsum_chosen = (log_prob_chosen * mask_chosen).cumsum(-1)
+    cumsum_rejected = (log_prob_rejected * mask_rejected).cumsum(-1)
     
-    return out(weighted_logp_c, weighted_logp_r)
+    chosen_score = (cumsum_chosen * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
+    rejected_score = (cumsum_rejected * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
+    
+    return build_output_dict(chosen_score, rejected_score)
 
-def score_uncertainty_aware(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    # Treat concentration as variance in a Gaussian approximation
-    # Higher concentration = higher uncertainty
-    uncertainty_c = logp_vocab_conc_c * mask_c
-    uncertainty_r = logp_vocab_conc_r * mask_r
-    
-    # Precision (inverse variance) weighting
-    precision_c = torch.exp(-uncertainty_c) * mask_c
-    precision_r = torch.exp(-uncertainty_r) * mask_r
-    
-    # Precision-weighted mean
-    logp_c_weighted = (logp_c * precision_c).sum(-1) / (precision_c.sum(-1) + 1e-8)
-    logp_r_weighted = (logp_r * precision_r).sum(-1) / (precision_r.sum(-1) + 1e-8)
-    
-    return out(logp_c_weighted, logp_r_weighted)
+# ============================================================================
+# Statistical Scoring Functions
+# ============================================================================
 
-def score_information_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    # Information content: negative log probability
-    # But we want to weight by how informative each token is
+def score_percentile(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    percentile: float = 75,
+    **kwargs
+) -> dict:
+    """Score using percentile of log probabilities."""
+    # Replace masked tokens with NaN for proper percentile calculation
+    log_prob_chosen_masked = log_prob_chosen.clone()
+    log_prob_rejected_masked = log_prob_rejected.clone()
+    
+    log_prob_chosen_masked[~mask_chosen.bool()] = float('nan')
+    log_prob_rejected_masked[~mask_rejected.bool()] = float('nan')
+    
+    chosen_score = torch.nanquantile(log_prob_chosen_masked.float(), percentile/100., dim=1)
+    if torch.isnan(chosen_score).any():
+        chosen_score = torch.nan_to_num(chosen_score, nan=0.0)
+    rejected_score = torch.nanquantile(log_prob_rejected_masked.float(), percentile/100., dim=1)
+    if torch.isnan(rejected_score).any():
+        rejected_score = torch.nan_to_num(rejected_score, nan=0.0)
+    
+    return build_output_dict(chosen_score, rejected_score)
+
+def score_power_mean(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    power: float = 0.5,
+    **kwargs
+) -> dict:
+    """Score using power mean of probabilities (p=0: geometric, p=1: arithmetic)."""
+    prob_chosen = torch.exp(log_prob_chosen) * mask_chosen
+    prob_rejected = torch.exp(log_prob_rejected) * mask_rejected
+    
+    chosen_score = (prob_chosen.pow(power).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)).pow(1/power)
+    rejected_score = (prob_rejected.pow(power).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)).pow(1/power)
+    
+    return build_output_dict(chosen_score.log(), rejected_score.log())
+
+def score_entropy_weighted(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score using sequence entropy."""
+    prob_chosen = torch.exp(log_prob_chosen) * mask_chosen + EPS
+    prob_rejected = torch.exp(log_prob_rejected) * mask_rejected + EPS
+    
+    # Normalize to valid probability distributions
+    prob_chosen = prob_chosen / prob_chosen.sum(-1, keepdim=True)
+    prob_rejected = prob_rejected / prob_rejected.sum(-1, keepdim=True)
+    
+    entropy_chosen = -(prob_chosen * torch.log(prob_chosen + EPS)).sum(-1)
+    entropy_rejected = -(prob_rejected * torch.log(prob_rejected + EPS)).sum(-1)
+    
+    return build_output_dict(entropy_chosen, entropy_rejected)
+
+def score_confidence_weighted(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score weighted by token confidence (high probability tokens get more weight)."""
+    prob_chosen = torch.exp(log_prob_chosen) * mask_chosen
+    prob_rejected = torch.exp(log_prob_rejected) * mask_rejected
+    
+    chosen_score = (log_prob_chosen * prob_chosen).sum(-1) / prob_chosen.sum(-1).clamp(min=EPS)
+    rejected_score = (log_prob_rejected * prob_rejected).sum(-1) / prob_rejected.sum(-1).clamp(min=EPS)
+    
+    return build_output_dict(chosen_score, rejected_score)
+
+# ============================================================================
+# Uncertainty-Aware Scoring Functions  
+# ============================================================================
+
+def score_with_vocab_uncertainty(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    vocab_concentration_chosen: Tensor,
+    vocab_concentration_rejected: Tensor,
+    alpha: float = 1.0,
+    **kwargs
+) -> dict:
+    """Score with uncertainty weighting (WPO-style)."""
+    # Adjust log probabilities by vocabulary concentration
+    log_prob_chosen_adj = log_prob_chosen - vocab_concentration_chosen * alpha
+    log_prob_rejected_adj = log_prob_rejected - vocab_concentration_rejected * alpha
+    
+    chosen_score = (log_prob_chosen_adj * mask_chosen).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)
+    rejected_score = (log_prob_rejected_adj * mask_rejected).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)
+    
+    return build_output_dict(chosen_score, rejected_score)
+
+def score_precision_weighted(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    vocab_concentration_chosen: Tensor,
+    vocab_concentration_rejected: Tensor,
+    **kwargs
+) -> dict:
+    """Score with precision weighting (uncertainty as variance)."""
+    # Higher concentration = higher uncertainty, so use inverse as precision
+    precision_chosen = torch.exp(-vocab_concentration_chosen) * mask_chosen
+    precision_rejected = torch.exp(-vocab_concentration_rejected) * mask_rejected
+    
+    chosen_score = (log_prob_chosen * precision_chosen).sum(-1) / (precision_chosen.sum(-1) + EPS)
+    rejected_score = (log_prob_rejected * precision_rejected).sum(-1) / (precision_rejected.sum(-1) + EPS)
+    
+    return build_output_dict(chosen_score, rejected_score)
+
+def score_information_weighted(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    vocab_concentration_chosen: Tensor,
+    vocab_concentration_rejected: Tensor,
+    **kwargs
+) -> dict:
+    """Score weighted by token informativeness (inverse of concentration)."""
+    max_conc = max(vocab_concentration_chosen.max(), vocab_concentration_rejected.max())
+    
     # Higher concentration = less informative
-    
-    # Convert to "informativeness" (inverse of concentration)
-    max_conc = max(logp_vocab_conc_c.max(), logp_vocab_conc_r.max())
-    info_c = (max_conc - logp_vocab_conc_c) * mask_c
-    info_r = (max_conc - logp_vocab_conc_r) * mask_r
+    info_chosen = (max_conc - vocab_concentration_chosen) * mask_chosen
+    info_rejected = (max_conc - vocab_concentration_rejected) * mask_rejected
     
     # Normalize to get weights
-    info_weights_c = torch.softmax(info_c, dim=-1) * mask_c
-    info_weights_r = torch.softmax(info_r, dim=-1) * mask_r
+    info_weights_chosen = torch.softmax(info_chosen, dim=-1) * mask_chosen
+    info_weights_rejected = torch.softmax(info_rejected, dim=-1) * mask_rejected
     
-    # Information-weighted average
-    logp_c_weighted = (logp_c * info_weights_c).sum(-1) / (info_weights_c.sum(-1) + 1e-8)
-    logp_r_weighted = (logp_r * info_weights_r).sum(-1) / (info_weights_r.sum(-1) + 1e-8)
+    chosen_score = (log_prob_chosen * info_weights_chosen).sum(-1) / (info_weights_chosen.sum(-1) + EPS)
+    rejected_score = (log_prob_rejected * info_weights_rejected).sum(-1) / (info_weights_rejected.sum(-1) + EPS)
     
-    return out(logp_c_weighted, logp_r_weighted)
+    return build_output_dict(chosen_score, rejected_score)
 
-def score_f_divergance(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    """
-    https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L943
-    """
-    logp_c = logp_c * mask_c
-    logp_r = logp_r * mask_r
-    logits_c = logp_c - F.softplus(logp_c)
-    logits_c = (logits_c * mask_c).sum(-1) / (mask_c.sum(-1) + 1e-8)
+# ============================================================================
+# Divergence-Based Scoring Functions
+# ============================================================================
 
-    logits_r = (logp_r - F.softplus(logp_r)) * mask_r
-    logits_r = logits_r.sum(-1) / (mask_r.sum(-1) + 1e-8)
-
-    # Calculate weighted sum
-    return out(logits_c, logits_r)
-
-
-
-def get_exp_cap(value, decimal=4):
-    """
-    Get the exponent cap of a value. This is used to cap the exponent of a value to avoid overflow.
-    The formula is : log(value.dtype.max)
-    E.g.
-      For float32 data type, the maximum exponent value is 88.7228 to 4 decimal points.
-    ```
-
-    Args:
-        value (`torch.Tensor`):
-            The input tensor to obtain the data type
-        decimal (`int`):
-            The number of decimal points of the output exponent cap.
-            eg: direct calling exp(log(torch.float32.max)) will result in inf
-            so we cap the exponent to 88.7228 to avoid overflow.
-    """
-    vdtype_max = torch.zeros([1]).to(value.dtype) + torch.finfo(value.dtype).max
-    vdtype_log_max = torch.log(vdtype_max).to(value.device)
-    return torch.floor(vdtype_log_max * 10**decimal) / 10**decimal if decimal > 0 else vdtype_log_max
-
-
-def cap_exp(value, cap=-1):
-    # Cap the exponent value below the upper-bound to avoid overflow, before calling torch.exp
-    cap = get_exp_cap(value) if cap < 0 else cap
-    return torch.exp(torch.clamp(value, max=cap))
-
-
-def score_f_alpha_divergance(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    """
-    https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L914
-    """
-    logp_c *= mask_c
-    logp_r *= mask_r
-    alpha_coef = .5
-    c = cap_exp(logp_c * -alpha_coef)/ alpha_coef
-    r = cap_exp(logp_r * -alpha_coef)/ alpha_coef
-    c = (c * mask_c).sum(-1) / (mask_c.sum(-1) + 1e-8)
-    r = (r * mask_r).sum(-1) / (mask_r.sum(-1) + 1e-8)
-
-    return out(c.log(), r.log())
-
-def score_with_decay(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r, decay=0.90):
-    # Current code uses indices as exponent, should use them as power
-    seq_len = logp_c.shape[1]
-    decay_weights = torch.pow(decay, torch.arange(seq_len, device=logp_c.device))
-    decay_weights = decay_weights.unsqueeze(0)
+def score_f_divergence(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score using f-divergence (from TRL)."""
+    masked_log_prob_chosen = log_prob_chosen * mask_chosen
+    masked_log_prob_rejected = log_prob_rejected * mask_rejected
     
-    # Apply decay and mask
-    c = (logp_c * mask_c * decay_weights).sum(-1) / (mask_c * decay_weights).sum(-1)
-    r = (logp_r * mask_r * decay_weights).sum(-1) / (mask_r * decay_weights).sum(-1)
+    logits_chosen = masked_log_prob_chosen - F.softplus(masked_log_prob_chosen)
+    logits_rejected = masked_log_prob_rejected - F.softplus(masked_log_prob_rejected)
     
-    return out(c, r)
-
-
-def score_power_mean(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r, p=0.5):
-    # p=0: geometric mean, p=1: arithmetic mean
-    # p=0.5: intermediate
-    pc = torch.exp(logp_c) * mask_c
-    pr = torch.exp(logp_r) * mask_r
+    chosen_score = (logits_chosen * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
+    rejected_score = (logits_rejected * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
     
-    score_c = (pc.pow(p).sum(-1) / mask_c.sum(-1)).pow(1/p)
-    score_r = (pr.pow(p).sum(-1) / mask_r.sum(-1)).pow(1/p)
-    return out(score_c.log(), score_r.log())
+    return build_output_dict(chosen_score, rejected_score)
 
+def score_alpha_divergence(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    alpha: float = 0.5,
+    **kwargs
+) -> dict:
+    """Score using alpha-divergence."""
+    masked_log_prob_chosen = log_prob_chosen * mask_chosen
+    masked_log_prob_rejected = log_prob_rejected * mask_rejected
+    
+    chosen_exp = safe_exp(masked_log_prob_chosen * -alpha) / alpha
+    rejected_exp = safe_exp(masked_log_prob_rejected * -alpha) / alpha
+    
+    chosen_score = (chosen_exp * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
+    rejected_score = (rejected_exp * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
 
-def score_seq_entropy_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
-    # Need to handle zeros in p to avoid nan
-    p_c = torch.exp(logp_c) * mask_c + 1e-10
-    p_r = torch.exp(logp_r) * mask_r + 1e-10
-    
-    # Normalize to valid probability distribution
-    p_c = p_c / p_c.sum(-1, keepdim=True)
-    p_r = p_r / p_r.sum(-1, keepdim=True)
-    
-    # Calculate entropy
-    entropy_c = -(p_c * torch.log(p_c + 1e-10)).sum(-1)
-    entropy_r = -(p_r * torch.log(p_r + 1e-10)).sum(-1)
-    
-    # Return difference (not through out() since this isn't a log-prob)
-    return out(entropy_c, entropy_r)
+    return build_output_dict(chosen_score.clamp(min=EPS).log(), rejected_score.clamp(min=EPS).log())
 
-# Or weight tokens by their "certainty"
-def score_certainty_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
-    # High prob tokens get more weight
-    weights_c = torch.exp(logp_c) * mask_c  
-    weights_r = torch.exp(logp_r) * mask_r
-    
-    # Certainty-weighted average
-    score_c = (logp_c * weights_c).sum(-1) / weights_c.sum(-1)
-    score_r = (logp_r * weights_r).sum(-1) / weights_r.sum(-1)
-    
-    return out(score_c, score_r)
+# ============================================================================
+# Alternative Scoring Functions
+# ============================================================================
 
-
-def score_percentile(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r, percentile=75):
-    # Replace padded values with nan, then use nanquantile
-    logp_c_masked = logp_c.clone()
-    logp_r_masked = logp_r.clone()
+def score_perplexity_ratio(
+    log_prob_chosen: Tensor, 
+    log_prob_rejected: Tensor, 
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    **kwargs
+) -> dict:
+    """Score using perplexity ratio (lower perplexity is better)."""
+    avg_log_prob_chosen = (log_prob_chosen * mask_chosen).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)
+    avg_log_prob_rejected = (log_prob_rejected * mask_rejected).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)
     
-    logp_c_masked[~mask_c.bool()] = float('nan')
-    logp_r_masked[~mask_r.bool()] = float('nan')
+    # Convert to perplexity (lower is better)
+    perp_chosen = torch.exp(-avg_log_prob_chosen)
+    perp_rejected = torch.exp(-avg_log_prob_rejected)
     
-    #hmm length adjust?
-    maxl = max(mask_c.sum(-1).max(), mask_r.sum(-1).max()).long()
-    score_c = torch.nanquantile(logp_c_masked.float()[:, :maxl], percentile/100., dim=1)
-    score_r = torch.nanquantile(logp_r_masked.float()[:, :maxl], percentile/100., dim=1)
+    # Return inverted scores so lower perplexity = higher score
+    return build_output_dict(perp_rejected.log(), perp_chosen.log())
 
-    return out(score_c, score_r)
-
-def score_perplexity_ratio(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
-    # Calculate perplexities
-    avg_logp_c = (logp_c * mask_c).sum(-1) / mask_c.sum(-1)
-    avg_logp_r = (logp_r * mask_r).sum(-1) / mask_r.sum(-1)
+def score_rank_based(
+    mask_chosen: Tensor, 
+    mask_rejected: Tensor, 
+    rank_chosen: Tensor,
+    rank_rejected: Tensor,
+    **kwargs
+) -> dict:
+    """Score using token ranks instead of log probabilities."""
+    # Convert ranks to log space and average
+    chosen_score = -(torch.log(rank_chosen + EPS) * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
+    rejected_score = -(torch.log(rank_rejected + EPS) * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
     
-    perp_c = torch.exp(-avg_logp_c)
-    perp_r = torch.exp(-avg_logp_r)
-    
-    # Lower perplexity is better, so r/c gives >1 if chosen is better
-    return out(perp_r.log(), perp_c.log())
-    return perp_c / (perp_c + perp_r)
-    return out(perp_r.log(), perp_c.log())
+    return build_output_dict(chosen_score, rejected_score)
 
+# ============================================================================
+# Legacy Function Aliases (for backward compatibility)
+# ============================================================================
 
+def score_preferences(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs):
+    """Legacy alias for score_log_prob_sum."""
+    return score_log_prob_sum(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs)
+
+def score_ipo(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs):
+    """Legacy alias for score_log_prob_mean."""
+    return score_log_prob_mean(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs)
+
+def score_1st_diverg(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs):
+    """Legacy alias for score_first_diverging_token."""
+    return score_first_diverging_token(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs)
