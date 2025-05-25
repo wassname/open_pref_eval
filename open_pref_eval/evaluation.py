@@ -33,13 +33,16 @@ def extract_logps(
     # with torch.no_grad(), compte_ref_context_manager:
     forward_output = concatenated_forward(model, batch)
 
-    chosen_t_logps = forward_output["chosen_logps"]
-    rejected_t_logps = forward_output["rejected_logps"]
-    chosen_mask = forward_output["chosen_mask"]
-    rejected_mask = forward_output["rejected_mask"]
-    logp_vocab_conc_c = forward_output["logp_vocab_conc_c"]
-    logp_vocab_conc_r = forward_output["logp_vocab_conc_r"]
-    
+    chosen_t_logps = forward_output["chosen_logps"].float()
+    rejected_t_logps = forward_output["rejected_logps"].float()
+    chosen_mask = forward_output["chosen_mask"].float()
+    rejected_mask = forward_output["rejected_mask"].float()
+    logp_vocab_conc_c = forward_output["logp_vocab_conc_c"].float()
+    logp_vocab_conc_r = forward_output["logp_vocab_conc_r"].float()
+
+
+    if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
+        logger.warning("Some samples have completions completely masked out. Check the dataset.")
 
     # Here we decide how to reduce the per_token_logps to a single uncalibrated probability
     outputs = {}
@@ -54,6 +57,8 @@ def extract_logps(
                 logp_vocab_conc_r
             )
             o = {f"score_{k}__{kk}": v for kk,v in o.items()}
+            for kk, v in o.items():
+                assert torch.isfinite(v).all(), f"Score {kk} is not finite: {v}"
             outputs.update(o)
         outputs["prob"] = outputs[f"score_{k}__sigmoid"] # use the last one as prob
     else:
@@ -123,7 +128,7 @@ def extract_logps(
         )
         clear_mem()
 
-    outputs["score_weighted"] = chosen_weight_logp - rejected_weight_logp # custom score
+    # outputs["score_weighted2"] = chosen_weight_logp - rejected_weight_logp # custom score
 
     outputs = {k: v.detach().float().cpu().numpy() for k, v in outputs.items()}
     # metadata
@@ -198,6 +203,7 @@ def eval_dataset(
                     data.append(d)
         else:
             d = extract_logps(model, batch, step, **kwargs)
+            d["adapter"] = [""] * len(d["prob"])  # no adapter
             data.append(d)
 
     # so here we have a list of dict of lists. We want concat each key to get a dict of lists
@@ -206,7 +212,7 @@ def eval_dataset(
     df = pd.DataFrame(data2)
 
     df["correct"] = df["prob"] > 0.5
-    df["model"] = model.config._name_or_path
+    df["model"] = model.config._name_or_path + df['adapter']
     df["dataset"] = dsname
 
     return df
