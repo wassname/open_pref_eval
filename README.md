@@ -2,12 +2,32 @@
 
 **No judge needed.** Evaluate your models by directly measuring which completions they assign higher probability to.
 
-**Why this is better:**
-- ⚡ **faster** than judge-based evals (no second model needed)
-- 🎯 **More discriminative** with fewer samples (direct probability comparison)
-- 🔧 **Actually hackable** (pure PyTorch + HuggingFace, ~2000 lines)
+## Why open_pref_eval?
 
-## How it works
+**Judge-free evaluation.** Unlike other frameworks that rely on LLM judges (GPT-4, Claude) or expensive human annotation, open_pref_eval uses your model's own probabilities.
+
+✅ **No judge bias** - Direct probability measurement vs LLM judge preferences  
+✅ **Cost-effective** - Single forward pass vs expensive judge API calls  
+✅ **Reproducible** - Deterministic probabilities vs variable judge responses  
+✅ **Actually hackable** - Pure PyTorch + HuggingFace, ~2000 lines vs complex frameworks
+
+**Limitations:**
+- HuggingFace Transformers models only (extensible)
+- Local inference only (extensible for API models)
+- Preference datasets only (prompt, chosen, rejected format)
+- Results not directly comparable to judge-based frameworks
+
+## How is this different?
+
+| **Approach** | **Judge-based frameworks** | **open_pref_eval** |
+|--------------|---------------------------|-------------------|
+| **Method** | LLM judges (GPT-4, Claude, etc.) | Direct probability modeling |
+| **Cost** | $$ per judge evaluation | $ one-time inference |
+| **Bias** | Judge model preferences | Model's own probabilities |
+| **Reproducibility** | Variable (judge inconsistency) | Deterministic |
+| **Setup** | Complex judge pipelines | Simple: load model + evaluate |
+
+## How It Works
 
 Instead of asking a judge "which is better?", we ask your model "which would you say?":
 
@@ -27,13 +47,14 @@ accuracy = lp_chosen > lp_rejected  # True = model aligned
 
 This works because models assign higher probability to completions they prefer. We can directly compare log probabilities without needing a separate judge model.
 
-## Quickstart
+## 🚀 Quickstart
 
 ```bash
 pip install git+https://github.com/wassname/open_pref_eval.git
 ```
 
-**Simple usage:**
+> **Evaluating model preferences is as simple as:**
+
 ```python
 from open_pref_eval.evaluation import evaluate_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -51,6 +72,8 @@ results, raw_data = evaluate_model(
 
 print(results)  # Shows accuracy per dataset
 ```
+
+**That's it!** No judge setup, no expensive API calls.
 
 **Output:**
 
@@ -70,9 +93,26 @@ results = evaluate(
 )
 ```
 
+## 💡 Use Cases
+
+- **Model Development**: Compare model versions during training without expensive judges
+- **A/B Testing**: Statistically validate preference improvements between model iterations  
+- **Research**: Bias-free evaluation for academic papers and experiments
+- **Local Evaluation**: Test models offline without API dependencies
+
 See detailed examples: [`examples/example_multiple_models.ipynb`](./examples/example_multiple_models.ipynb)
 
-## Available Datasets
+## ⚡ Key Features
+
+| Feature | open_pref_eval | Judge-based frameworks |
+|---------|----------------|------------------------|
+| Cost per evaluation | 💚 Single inference | 🟡 Model + judge calls |
+| Evaluation bias | 💚 Model's own probs | 🟡 Judge preferences |
+| Reproducibility | 💚 Deterministic | 🟡 Variable |
+| Setup complexity | 💚 Load model + run | 🟡 Multi-step pipelines |
+| Offline capability | 💚 Fully local | 🟡 Often needs APIs |
+
+## 📊 Available Datasets
 
 Built-in datasets covering key safety and capability areas:
 - **Safety**: `toxic-dpo-v0.2` (toxicity), `ethics_*` (moral reasoning)  
@@ -103,11 +143,14 @@ accuracy = score > 0  # chosen was more probable
 
 ## FAQ
 
+**Q: How does this compare to other evaluation frameworks?**  
+A: Most frameworks use LLM judges or human annotation. We use direct probability measurement:
+- vs **LM-Eval-Harness**: Focus on preference tasks vs academic benchmarks
+- vs **LightEval/Verdict**: No judge setup needed, works with any local model
+- vs **Prometheus/HELM**: No proprietary API dependencies or complex infrastructure
+
 **Q: Why is this faster than judge-based evaluation?**  
 A: No second model needed. We use your model's own token probabilities, computed in a single forward pass.
-
-**Q: How does this compare to lm-eval-harness or other frameworks?**  
-A: I found those hard to get up and running, and to modify. This is pure PyTorch + HuggingFace, with a focus on preference evaluation. You can do lots of quick evals to aid in model development.
 
 **Q: What if my model wasn't trained on preference data?**  
 A: Still works! Any model assigns probabilities to text. Well-aligned models tend to assign higher probability to helpful/harmless responses even without explicit preference training.
@@ -115,11 +158,36 @@ A: Still works! Any model assigns probabilities to text. Well-aligned models ten
 **Q: Can I add custom datasets?**  
 A: Yes! Any dataset with `prompt`, `chosen`, `rejected` columns works. See `examples/` for dataset creation.
 
-# Citing 
+## 📚 Documentation
+
+| Section | Description |
+|---------|-------------|
+| [Examples](./examples/) | Jupyter notebooks with detailed usage |
+| [Technical Details](#technical-details) | Scoring methods and implementation |
+| [Available Datasets](#-available-datasets) | Built-in preference datasets |
+| [FAQ](#faq) | Common questions and comparisons |
+
+## Appendix: Framework Comparison
+
+| Feature | open_pref_eval | [LM-Eval-Harness](https://github.com/EleutherAI/lm-evaluation-harness) | [LightEval](https://github.com/huggingface/lighteval) | [Prometheus](https://github.com/prometheus-eval/prometheus-eval) | [Verdict](https://github.com/haizelabs/verdict) | [HELM](https://github.com/stanford-crfm/helm) |
+|---------|----------------|-----------------|-----------|------------|---------|------|
+| **Judge Required** | ❌ | ❌ | Optional | ✅ (own models) | ✅ | Optional |
+| **API Dependencies** | ❌ | Optional | Optional | ❌ | ✅ | Optional |
+| **Local-first** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Preference Focus** | ✅ | ❌ | ❌ | ✅ | ✅ | Partial |
+| **Academic Benchmarks** | ❌ | ✅ | ✅ | Partial | ❌ | ✅ |
+| **Custom Tasks** | ✅ (datasets) | ✅ | ✅ | ✅ | ✅ | Limited |
+| **Batch Processing** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Result Export** | CSV/JSON | JSON/CSV | Multiple | JSON | Multiple | Multiple |
+
+
+
+## Citing
+
 If this repository is useful in your own research, you can use the following BibTeX entry:
 
 ```
-@software{wassname2024reprpo,
+@software{wassname2024open_pref_eval,
   author = {Clark, M.J.},
   title = {open_pref_eval: Fast Preference Evaluation for Local LLMs},
   year = {2025},
