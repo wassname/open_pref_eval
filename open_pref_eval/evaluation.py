@@ -39,6 +39,8 @@ def extract_logps(
     rejected_mask = forward_output["rejected_mask"].float()
     logp_vocab_conc_c = forward_output["logp_vocab_conc_c"].float()
     logp_vocab_conc_r = forward_output["logp_vocab_conc_r"].float()
+    chosen_ranks = forward_output["chosen_ranks"].float()
+    rejected_ranks = forward_output["rejected_ranks"].float()
 
 
     if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
@@ -49,12 +51,14 @@ def extract_logps(
     if isinstance(score_fn, dict):
         for k, score_fn in score_fn.items():
             o = score_fn(
-                chosen_t_logps,
-                rejected_t_logps,
-                chosen_mask,
-                rejected_mask,
-                logp_vocab_conc_c,
-                logp_vocab_conc_r
+                chosen_t_logps=chosen_t_logps,
+                rejected_t_logps=rejected_t_logps,
+                chosen_mask=chosen_mask,
+                rejected_mask=rejected_mask,
+                logp_vocab_conc_c=logp_vocab_conc_c,
+                logp_vocab_conc_r=logp_vocab_conc_r,
+                chosen_ranks=chosen_ranks,
+                rejected_ranks=rejected_ranks,
             )
             o = {f"score_{k}__{kk}": v for kk,v in o.items()}
             for kk, v in o.items():
@@ -63,12 +67,14 @@ def extract_logps(
         outputs["prob"] = outputs[f"score_{k}__sigmoid"] # use the last one as prob
     else:
         o = score_fn(
-            chosen_t_logps,
-            rejected_t_logps,
-            chosen_mask,
-            rejected_mask,
-            logp_vocab_conc_c,
-            logp_vocab_conc_r,
+            chosen_t_logps=chosen_t_logps,
+            rejected_t_logps=rejected_t_logps,
+            chosen_mask=chosen_mask,
+            rejected_mask=rejected_mask,
+            logp_vocab_conc_c=logp_vocab_conc_c,
+            logp_vocab_conc_r=logp_vocab_conc_r,
+            chosen_ranks=chosen_ranks,
+            rejected_ranks=rejected_ranks,
         )
         o = {f"score__{kk}": v for kk, v in o.items()}
         outputs.update(o)

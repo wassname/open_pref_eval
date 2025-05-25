@@ -196,9 +196,27 @@ def concatenated_forward(
     per_token_logps[~loss_mask] = 0
     per_token_logps = torch.roll(per_token_logps, shifts=1, dims=1)
 
+    def gather_ranks(logprobs, labels, loss_mask):
 
+        # Compute token ranks (1-indexed, where 1 is the highest probability token)
+        # Sort logprobs in descending order and find where each label token ranks
+        sorted_indices = torch.argsort(logprobs, dim=-1, descending=True)
+        vocab_size = logprobs.shape[-1]
+        
+        # Create a tensor that maps from token_id to its rank
+        ranks = torch.empty_like(sorted_indices)
+        ranks.scatter_(dim=-1, index=sorted_indices, src=torch.arange(1, vocab_size + 1, device=logprobs.device).expand_as(sorted_indices))
+        
+        # Gather the ranks for our specific label tokens
+        per_token_ranks = torch.gather(ranks, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+        per_token_ranks[~loss_mask] = 0  # Set rank to 0 for masked tokens
+        per_token_ranks = torch.roll(per_token_ranks, shifts=1, dims=1)
+        return per_token_ranks
+    per_token_ranks = gather_ranks(logprobs, labels, loss_mask)
 
     output = {}
+
+
 
     # as in Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
     # we are measuring how concentrated the model is for this token, over the vocabulary
@@ -215,6 +233,8 @@ def concatenated_forward(
     output['rejected_logits'] = logits[num_examples:][:, prompt_length:]
     output["chosen_logps"] = per_token_logps[:num_examples][:, prompt_length:]
     output["rejected_logps"] = per_token_logps[num_examples:][:, prompt_length:]
+    output["chosen_ranks"] = per_token_ranks[:num_examples][:, prompt_length:]
+    output["rejected_ranks"] = per_token_ranks[num_examples:][:, prompt_length:]
 
     mean_chosen_logits = logits[:num_examples][loss_mask[:num_examples]].mean()
     mean_rejected_logits = logits[num_examples:][loss_mask[num_examples:]].mean()

@@ -2,39 +2,57 @@
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-from typing import Optional, List, Union
-from collections import OrderedDict
 import numpy as np
 from jaxtyping import Float, Int
 
-eps = 1e-8
+EPS = 1e-8
 
-def log_norm(x, mask):
-    # mask out padding as -inf so it gets zero weight
-    x = x.masked_fill(mask == 0, float('-inf'))
-    # subtract logsumexp to normalize in log-space
-    return x - torch.logsumexp(x, dim=-1, keepdim=True)
+# ============================================================================
+# Utility Functions
+# ============================================================================
 
-def norm(x, mask, eps=eps):
-    # no need to use mask as it's log
-    x = x - x.min(-1, keepdim=True)[0]
-    return x / (x.sum(-1, keepdim=True)+eps)
+def log_softmax_normalize(log_values: Tensor, mask: Tensor) -> Tensor:
+    """Normalize log values using log-softmax, masking out padding tokens."""
+    # Mask out padding as -inf so it gets zero weight in softmax
+    masked_log_values = log_values.masked_fill(mask == 0, float('-inf'))
+    # Subtract logsumexp to normalize in log-space
+    return masked_log_values - torch.logsumexp(masked_log_values, dim=-1, keepdim=True)
 
-def out(clogp, rlogp):
-    # max_logp = torch.maximum(clogp, rlogp)
-    # exp_c = torch.exp(clogp - max_logp)
-    # exp_r = torch.exp(rlogp - max_logp)
-    # return exp_c / (exp_c + exp_r)
-    # return torch.sigmoid(clogp - rlogp)
+def prob_normalize(values: Tensor, mask: Tensor) -> Tensor:
+    """Normalize probability values, handling masked tokens."""
+    # Zero out masked positions, then normalize
+    masked_values = values * mask
+    return masked_values / (masked_values.sum(-1, keepdim=True) + EPS)
+
+def first_nonzero(x: Float[Tensor, 'b t'], dim: int = 1) -> Float[Tensor, 'b']:
+    """Get the first non-zero element in a tensor along the specified dimension."""
+    return x[torch.arange(x.shape[0]), (x != 0).float().argmax(dim=dim)]
+
+def get_exp_cap(value: Tensor, decimal: int = 4) -> Tensor:
+    """Get the exponent cap to avoid overflow when calling torch.exp."""
+    dtype_max = torch.finfo(value.dtype).max
+    log_max = torch.log(torch.tensor(dtype_max, dtype=value.dtype, device=value.device))
+    return torch.floor(log_max * 10**decimal) / 10**decimal if decimal > 0 else log_max
+
+def safe_exp(log_values: Tensor, cap: float = -1) -> Tensor:
+    """Safely compute exp with clamping to avoid overflow."""
+    if cap < 0:
+        cap = get_exp_cap(log_values)
+    return torch.exp(torch.clamp(log_values, max=cap))
+
+def build_output_dict(chosen_log_score: Tensor, rejected_log_score: Tensor) -> dict:
+    """Build standardized output dictionary from log scores."""
+    log_ratio = chosen_log_score - rejected_log_score
     return {
-        'sigmoid': torch.sigmoid(clogp - rlogp),
-        'logratio': clogp - rlogp,
-        'correct': clogp.exp() > rlogp.exp(), # the equals case is a big division
-        # 'prob': clogp.exp() / (clogp.exp() + rlogp.exp()), # same as sigmoid
+        'sigmoid': torch.sigmoid(log_ratio),
+        'log_ratio': log_ratio,
+        'correct': chosen_log_score > rejected_log_score,
+        'chosen_log_score': chosen_log_score,
+        'rejected_log_score': rejected_log_score,
     }
 
 
-def score_agg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, agg=np.min):
+def score_agg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], agg=np.min, **kwargs):
 
     """
     calculate if the chosen completion is higher than the rejected, using the AGG logprob of the sequence. Where agg could be min, max, mean, sum, first, last, etc.
@@ -53,7 +71,7 @@ def first_nonzero(x: Float[Tensor, 'b t'], dim=1) -> Float[Tensor, 'b']:
     """get the first non zero element in a tensor"""
     return x[torch.arange(x.shape[0]), (x != 0).float().argmax(dim=dim)]
 
-def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
     """
     calculate if the chosen completion is higher than the rejected, using first divering token. This gives a contrasting signal, but it's noisy.
 
@@ -62,7 +80,7 @@ def score_1st_diverg(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'],
     r = first_nonzero(logp_r * mask_r)
     return out(c, r)
 
-def score_preferences(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_preferences(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
     """
     calculate if the chosen completion is higher than the rejected, using DPO
 
@@ -77,7 +95,7 @@ def score_preferences(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t']
     return out(c, r)
 
 
-def score_ipo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_ipo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
     """
     IPO loss from the [IPO](https://huggingface.co/papers/2310.12036) paper.
     Unlike preference loss which takes the combined prob of the whole sequence, this takes the mean prob of each token. This gives a pretty good signal.
@@ -89,9 +107,8 @@ def score_ipo(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c
     return out(c, r)
 
 
-def score_cumsum(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
-    # get the avg logprob over the cumulative logprob of each token, this means the initial tokens are weighted higher, but all tokens have an influence
-    eps = eps
+def score_cumsum(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
+    # get the avg logprob over the cumulative logprob of each token, this means the initial tokens are weighted higher, but all tokens have an influenceeps = eps
     cumsum_c = (logp_c * mask_c).cumsum(-1)
     # Weight by position (early tokens get higher weight)
     c = (cumsum_c * mask_c).sum(-1) / (mask_c.sum(-1) + eps)
@@ -102,9 +119,8 @@ def score_cumsum(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mas
     return out(c, r)
 
 
-def score_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
     """Weight by cumulative logprob."""
-    eps = eps
     
     logp_cm = (logp_c * mask_c)
     logp_rm = (logp_r * mask_r)
@@ -122,9 +138,8 @@ def score_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], m
     # FIXME this is somehow coming out -12 to 12
     return out(cs, rs)
 
-def score_weighted_prob(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_weighted_prob(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
     """Weight by cumulative prob."""
-    eps = eps
     
    # Apply exp to log probabilities and mask
     p_c = torch.exp(logp_c) * mask_c
@@ -145,7 +160,7 @@ def score_weighted_prob(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t
     return out(cs.log(), rs.log())
 
     
-def score_with_entropy_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, alpha=1):
+def score_with_entropy_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, alpha=1, **kwargs):
     # here we downweight uncertain tokens. E.g. if it's low prob because everything is low, we want to reduce its impact
     # Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
     # https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L1197
@@ -155,7 +170,7 @@ def score_with_entropy_weight(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor
     logp_r_w = (logp_r_adjusted * mask_r).sum(-1) / mask_r.sum(-1).clamp(min=eps)
     return out(logp_c_w, logp_r_w)
 
-def score_confidence_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, T=1.0):
+def score_confidence_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, T=1.0, **kwargs):
     # Convert concentration to confidence weights (higher concentration = lower confidence)
     # Use softmax to normalize across sequence
     conf_c = torch.softmax(-logp_vocab_conc_c/T, dim=-1) * mask_c * T
@@ -167,7 +182,7 @@ def score_confidence_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor
     
     return out(weighted_logp_c, weighted_logp_r)
 
-def score_uncertainty_aware(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_uncertainty_aware(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, **kwargs):
     # Treat concentration as variance in a Gaussian approximation
     # Higher concentration = higher uncertainty
     uncertainty_c = logp_vocab_conc_c * mask_c
@@ -183,7 +198,7 @@ def score_uncertainty_aware(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 
     
     return out(logp_c_weighted, logp_r_weighted)
 
-def score_information_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_information_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r, **kwargs):
     # Information content: negative log probability
     # But we want to weight by how informative each token is
     # Higher concentration = less informative
@@ -203,7 +218,7 @@ def score_information_weighted(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tenso
     
     return out(logp_c_weighted, logp_r_weighted)
 
-def score_f_divergance(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_f_divergance(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
     """
     https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L943
     """
@@ -247,7 +262,7 @@ def cap_exp(value, cap=-1):
     return torch.exp(torch.clamp(value, max=cap))
 
 
-def score_f_alpha_divergance(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], logp_vocab_conc_c, logp_vocab_conc_r):
+def score_f_alpha_divergance(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor, 'b t'], mask_c: Int[Tensor, 'b t'], mask_r: Int[Tensor, 'b t'], **kwargs):
     """
     https://github.com/huggingface/trl/blob/main/trl/trainer/dpo_trainer.py#L914
     """
@@ -261,7 +276,7 @@ def score_f_alpha_divergance(logp_c: Float[Tensor, 'b t'], logp_r: Float[Tensor,
 
     return out(c.log(), r.log())
 
-def score_with_decay(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r, decay=0.90):
+def score_with_decay(logp_c, logp_r, mask_c, mask_r, decay=0.90, **kwargs):
     # Current code uses indices as exponent, should use them as power
     seq_len = logp_c.shape[1]
     decay_weights = torch.pow(decay, torch.arange(seq_len, device=logp_c.device))
@@ -274,7 +289,7 @@ def score_with_decay(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_voc
     return out(c, r)
 
 
-def score_power_mean(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r, p=0.5):
+def score_power_mean(logp_c, logp_r, mask_c, mask_r, p=0.5, **kwargs):
     # p=0: geometric mean, p=1: arithmetic mean
     # p=0.5: intermediate
     pc = torch.exp(logp_c) * mask_c
@@ -285,7 +300,7 @@ def score_power_mean(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_voc
     return out(score_c.log(), score_r.log())
 
 
-def score_seq_entropy_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
+def score_seq_entropy_weighted(logp_c, logp_r, mask_c, mask_r, **kwargs):
     # Need to handle zeros in p to avoid nan
     p_c = torch.exp(logp_c) * mask_c + eps
     p_r = torch.exp(logp_r) * mask_r + eps
@@ -302,7 +317,7 @@ def score_seq_entropy_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c
     return out(entropy_c, entropy_r)
 
 # Or weight tokens by their "certainty"
-def score_certainty_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
+def score_certainty_weighted(logp_c, logp_r, mask_c, mask_r, **kwargs):
     # High prob tokens get more weight
     weights_c = torch.exp(logp_c) * mask_c  
     weights_r = torch.exp(logp_r) * mask_r
@@ -314,7 +329,7 @@ def score_certainty_weighted(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, 
     return out(score_c, score_r)
 
 
-def score_percentile(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r, percentile=75):
+def score_percentile(logp_c, logp_r, mask_c, mask_r, percentile=75, **kwargs):
     # Replace padded values with nan, then use nanquantile
     logp_c_masked = logp_c.clone()
     logp_r_masked = logp_r.clone()
@@ -329,7 +344,7 @@ def score_percentile(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_voc
 
     return out(score_c, score_r)
 
-def score_perplexity_ratio(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, logp_vocab_conc_r):
+def score_perplexity_ratio(logp_c, logp_r, mask_c, mask_r, **kwargs):
     # Calculate perplexities
     avg_logp_c = (logp_c * mask_c).sum(-1) / mask_c.sum(-1).clamp(min=eps)
     avg_logp_r = (logp_r * mask_r).sum(-1) / mask_r.sum(-1).clamp(min=eps)
@@ -343,3 +358,14 @@ def score_perplexity_ratio(logp_c, logp_r, mask_c, mask_r, logp_vocab_conc_c, lo
     return out(perp_r.log(), perp_c.log())
 
 
+
+def score_rank(mask_c, mask_r, chosen_ranks, rejected_ranks, **kwargs):
+    """
+    Score a sequence by the rank (not logprob)
+    """
+    # Need to handle zeros in p to avoid nan
+    p_c = (torch.log(chosen_ranks) * mask_c) / (mask_c.sum(dim=-1, keepdim=True) + eps)
+    p_r = (torch.log(rejected_ranks) * mask_r) / (mask_r.sum(dim=-1, keepdim=True) + eps)
+
+    # Return difference (not through out() since this isn't a log-prob)
+    return out(p_c, p_r)
