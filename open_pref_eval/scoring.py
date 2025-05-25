@@ -143,7 +143,11 @@ def score_percentile(
     log_prob_rejected_masked[~mask_rejected.bool()] = float('nan')
     
     chosen_score = torch.nanquantile(log_prob_chosen_masked.float(), percentile/100., dim=1)
+    if torch.isnan(chosen_score).any():
+        chosen_score = torch.nan_to_num(chosen_score, nan=0.0)
     rejected_score = torch.nanquantile(log_prob_rejected_masked.float(), percentile/100., dim=1)
+    if torch.isnan(rejected_score).any():
+        rejected_score = torch.nan_to_num(rejected_score, nan=0.0)
     
     return build_output_dict(chosen_score, rejected_score)
 
@@ -308,8 +312,8 @@ def score_alpha_divergence(
     
     chosen_score = (chosen_exp * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
     rejected_score = (rejected_exp * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score.log(), rejected_score.log())
+
+    return build_output_dict(chosen_score.clamp(min=EPS).log(), rejected_score.clamp(min=EPS).log())
 
 # ============================================================================
 # Alternative Scoring Functions
