@@ -37,8 +37,8 @@ def extract_logps(
     rejected_t_logps = forward_output["rejected_logps"].float()
     chosen_mask = forward_output["chosen_mask"].float()
     rejected_mask = forward_output["rejected_mask"].float()
-    logp_vocab_conc_c = forward_output["logp_vocab_conc_c"].float()
-    logp_vocab_conc_r = forward_output["logp_vocab_conc_r"].float()
+    logp_vocab_conc_c = forward_output["vocab_concentration_chosen"].float()
+    logp_vocab_conc_r = forward_output["vocab_concentration_rejected"].float()
     chosen_ranks = forward_output["chosen_ranks"].float()
     rejected_ranks = forward_output["rejected_ranks"].float()
 
