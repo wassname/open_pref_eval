@@ -228,7 +228,7 @@ def score_with_vocab_uncertainty(
     
     return build_output_dict(chosen_score, rejected_score)
 
-def score_precision_weighted(
+def score_vocab_precision_weighted(
     log_prob_chosen: Tensor, 
     log_prob_rejected: Tensor, 
     mask_chosen: Tensor, 
@@ -247,7 +247,7 @@ def score_precision_weighted(
     
     return build_output_dict(chosen_score, rejected_score)
 
-def score_information_weighted(
+def score_vocab_information_weighted(
     log_prob_chosen: Tensor, 
     log_prob_rejected: Tensor, 
     mask_chosen: Tensor, 

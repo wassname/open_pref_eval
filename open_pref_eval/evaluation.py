@@ -1,6 +1,6 @@
 import itertools
 from typing import Callable, List, Optional, Union
-
+import warnings
 import pandas as pd
 import torch
 from datasets import Dataset, load_dataset
@@ -61,7 +61,8 @@ def extract_logps(
 
     # Validate that we have valid completions
     if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
-        logger.warning("Some samples have completions completely masked out. Check the dataset.")
+        import warnings
+        warnings.warn(f"Some samples have completions completely masked out. Check the dataset. {batch[0]}")
 
     # Compute preference scores using provided scoring function(s)
     outputs = {}
@@ -286,12 +287,16 @@ def eval_datasets(
     """
     dfs = []
     for dataset in tqdm(datasets, disable=not verbose, unit="dataset"):
-        df = eval_dataset(model, tokenizer, dataset, verbose=verbose, **kwargs)
+        try:
+            df = eval_dataset(model, tokenizer, dataset, verbose=verbose, **kwargs)
+        except Exception as e:
+            logger.error(f"Failed to evaluate dataset {ds2name(dataset)}: {e}")
+            continue
         dfs.append(df)
         clear_mem()
     
     if not dfs:
-        logger.warning("No datasets processed")
+        warnings.warn("No datasets processed")
         return pd.DataFrame()
         
     df = pd.concat(dfs, ignore_index=True)
