@@ -31,6 +31,7 @@ dev = [
   "pytest>=8.3",
   "parameterized>=0.9",
   "anycache>=2.4.0",
+  "statsmodels>=0.14.4",
 ]
 peft = [
   "peft>=0.15.2",

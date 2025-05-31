@@ -62,7 +62,7 @@ def extract_logps(
     # Validate that we have valid completions
     if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
         import warnings
-        warnings.warn(f"Some samples have completions completely masked out. Check the dataset. {batch[0]}")
+        warnings.warn(f"Some samples have completions completely masked out. Check the dataset.")
 
     # Compute preference scores using provided scoring function(s)
     outputs = {}
@@ -290,7 +290,7 @@ def eval_datasets(
         try:
             df = eval_dataset(model, tokenizer, dataset, verbose=verbose, **kwargs)
         except Exception as e:
-            logger.error(f"Failed to evaluate dataset {ds2name(dataset)}: {e}")
+            logger.exception(f"Failed to evaluate dataset {ds2name(dataset)}: {e}")
             continue
         dfs.append(df)
         clear_mem()
@@ -347,6 +347,8 @@ def evaluate_model(
     df_agg = df_raw.groupby(agg_cols, dropna=False)[numeric_cols].mean()
     df_agg["n"] = df_raw.groupby(agg_cols, dropna=False).size()
     clear_mem()
+
+    # TODO temp scaling or logits
     return df_agg, df_raw
 
 

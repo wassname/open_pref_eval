@@ -8,6 +8,7 @@ from loguru import logger
 from torch import Tensor
 from transformers import AutoTokenizer
 from transformers.data.data_collator import DataCollatorMixin
+import warnings
 
 
 @dataclass
@@ -115,21 +116,8 @@ class DataCollatorForPreference(DataCollatorMixin):
     
     def _log_truncation_warnings(self, prompt_trunc: torch.Tensor, chosen_trunc: torch.Tensor, rejected_trunc: torch.Tensor):
         """Log warnings if significant truncation is detected."""
-        if prompt_trunc.mean() > 0:
-            logger.debug(
-                f"Prompts were truncated to {self.max_prompt_length} tokens for "
-                f"{prompt_trunc.mean().item():.2%} of samples. Consider increasing max_prompt_length."
-            )
-        if chosen_trunc.mean() > 0:
-            logger.debug(
-                f"Chosen completions were truncated to {self.max_completion_length} tokens for "
-                f"{chosen_trunc.mean().item():.2%} of samples. Consider increasing max_completion_length."
-            )
-        if rejected_trunc.mean() > 0:
-            logger.debug(
-                f"Rejected completions were truncated to {self.max_completion_length} tokens for "
-                f"{rejected_trunc.mean().item():.2%} of samples. Consider increasing max_completion_length."
-            )
+        if ( prompt_trunc.mean() > 0) or (chosen_trunc.mean() > 0) or (rejected_trunc.mean() > 0):
+            warnings.warn("Truncation detected in some sequences. Consider adjusting max lengths.")
 
 
 def concatenated_inputs(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
