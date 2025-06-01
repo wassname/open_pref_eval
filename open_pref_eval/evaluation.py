@@ -18,7 +18,7 @@ from .datasets import ds2name, get_default_datasets
 from .helpers.mem import clear_mem
 from .helpers.peft import is_peft_model, set_adapter
 from .scoring import score_ipo
-from .trainer import DataCollatorForPreference, concatenated_forward
+from .trainer import DataCollatorForPreference, simple_forward
 
 
 def extract_logps(
@@ -45,9 +45,9 @@ def extract_logps(
     
     model.eval()
     
-    # Run forward pass through concatenated model
+    # Run forward pass through model
     with torch.no_grad():
-        forward_output = concatenated_forward(model, batch)
+        forward_output = simple_forward(model, batch)
 
     # Extract model outputs and convert to float for numerical stability
     chosen_t_logps = forward_output["chosen_logps"].float()
@@ -114,9 +114,6 @@ def extract_logps(
         # Debug: completion length, for checking if the model is biased
         _l_chosen=(batch["chosen_input_ids"] > 0).sum(-1),
         _l_rejected=(batch["rejected_input_ids"] > 0).sum(-1),
-        _policy_weights=policy_weights,
-        _chosen_weight_logp=chosen_weight_logp,
-        _rejected_weight_logp=rejected_weight_logp,
     )
     
     if include_raw:
@@ -180,15 +177,22 @@ def eval_dataset(
         f"max_length {max_length} must be greater than max_prompt_length {max_prompt_length}"
     )
     
-    # Setup data collator and loader
-    data_collator = DataCollatorForPreference(
-        pad_token_id=tokenizer.pad_token_id,
+    # Pre-tokenize dataset with truncation tracking
+    from .trainer import tokenize_dataset
+    tokenized_dataset = tokenize_dataset(
+        dataset=dataset,
         tokenizer=tokenizer,
+        max_length=max_length,
         max_prompt_length=max_prompt_length,
-        max_completion_length=max_length - max_prompt_length,
+        verbose=verbose >= 1,
+    )
+    
+    # Setup data collator and loader  
+    data_collator = DataCollatorForPreference(
+        tokenizer=tokenizer,
     )
     eval_dataloader = DataLoader(
-        dataset,
+        tokenized_dataset,
         batch_size=batch_size,
         collate_fn=data_collator,
         num_workers=num_workers,
@@ -226,14 +230,27 @@ def eval_dataset(
     
     # Combine all batch results
     combined_keys = evaluation_data[0].keys()
-    combined_data = {key: itertools.chain(*[batch[key] for batch in evaluation_data]) 
-                    for key in combined_keys}
+    combined_data = {}
+    for key in combined_keys:
+        # Use list concatenation instead of itertools.chain for compatibility
+        combined_data[key] = []
+        for batch in evaluation_data:
+            if isinstance(batch[key], (list, tuple)):
+                combined_data[key].extend(batch[key])
+            else:
+                # Handle numpy arrays
+                combined_data[key].extend(batch[key].tolist() if hasattr(batch[key], 'tolist') else [batch[key]])
     df = pd.DataFrame(combined_data)
 
     # Add derived columns
     df["correct"] = df["prob"] > 0.5
     df.fillna({'adapter': 'none'}, inplace=True)
-    df["model"] = model.config._name_or_path + df['adapter']
+    
+    # Debug: print adapter column
+    logger.debug(f"Adapter column unique values: {df['adapter'].unique()}")
+    logger.debug(f"Adapter column sample: {df['adapter'].head().tolist()}")
+    
+    df["model"] = model.config._name_or_path + "_" + df['adapter'].astype(str)
     df["dataset"] = dataset_name
 
     return df
@@ -262,16 +279,16 @@ def eval_datasets(
     for dataset in tqdm(datasets, disable=not verbose, unit="dataset"):
         try:
             df = eval_dataset(model, tokenizer, dataset, verbose=verbose, **kwargs)
+            dfs.append(df)
         except Exception as e:
-            logger.exception(f"Failed to evaluate dataset {ds2name(dataset)}: {e}")
+            logger.error(f"Failed to evaluate dataset {ds2name(dataset)}: {e}")
             continue
-        dfs.append(df)
         clear_mem()
-    
+
     if not dfs:
         warnings.warn("No datasets processed")
         return pd.DataFrame()
-        
+
     df = pd.concat(dfs, ignore_index=True)
     df["model"] = model.config._name_or_path  # Consistent model naming
     return df

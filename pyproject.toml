@@ -20,6 +20,7 @@ dependencies = [
   "loguru>=0.7",
   "tqdm>=4.66",
   "bitsandbytes>=0.45.5",
+  "peft>=0.15.2",
 ]
 
 [dependency-groups]

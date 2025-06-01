@@ -1,8 +1,9 @@
 from contextlib import contextmanager, nullcontext
+from typing import TYPE_CHECKING
 from transformers.utils import is_peft_available
 from transformers import PreTrainedModel
 
-if is_peft_available():
+if is_peft_available() or TYPE_CHECKING:
     from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 def is_peft_model(model):
@@ -64,7 +65,7 @@ def set_hf_adapter(model: PreTrainedModel, adapter_name: str = None):
             model.set_adapter(old_adapter_name)
 
 # @contextmanager
-def set_peft_adapter(model: PeftModel, adapter_name: str = None):
+def set_peft_adapter(model: "PeftModel", adapter_name: str = None):
     old_adapter_name = model.active_adapter
     try:
         if adapter_name is not None:
