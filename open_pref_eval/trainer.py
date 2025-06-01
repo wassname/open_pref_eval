@@ -136,78 +136,6 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
     
     return tokenized_ds
 
-def batch_pad_side(
-    encoded_inputs,
-    pad_token_id: int,
-    side: str,
-    max_length: Optional[int]= None,
-    return_attention_mask: Optional[bool] = None,
-    pad_token_type_id: Optional[int] = None,
-) -> dict:
-    """
-    Pad encoded inputs (on left/right and up to predefined length or max length in the batch)
-
-    Args:
-        encoded_inputs:
-            Dictionary of tokenized inputs (`List[int]`) or batch of tokenized inputs (`List[List[int]]`).
-        max_length: maximum length of the returned list and optionally padding length (see below).
-            Will truncate by taking into account the special tokens.
-        side:
-            The side on which the model should have padding applied. Should be selected between ['right', 'left'].
-            Default value is picked from the class attribute of the same name.
-        return_attention_mask:
-            (optional) Set to False to avoid returning attention mask (default: set to model specifics)
-
-    modified from https://github.com/huggingface/transformers/blob/main/src/transformers/tokenization_utils_base.py#L3672
-    """
-    # FIXME this seems to be for one row, not a batch, we need to
-    required_input = encoded_inputs['input_ids']
-
-    if max_length is None:
-        max_length = max([len(ids) for ids in encoded_inputs['input_ids']])
-
-    needs_to_be_padded = len(required_input) != max_length
-
-    # Initialize attention mask if not present.
-    if return_attention_mask and "attention_mask" not in encoded_inputs:
-        encoded_inputs["attention_mask"] = [1] * len(required_input)
-
-    if needs_to_be_padded:
-        difference = max_length - len(required_input)
-
-        if side == "right":
-            if return_attention_mask:
-                encoded_inputs["attention_mask"] = encoded_inputs["attention_mask"] + [0] * difference
-            if "token_type_ids" in encoded_inputs:
-                encoded_inputs["token_type_ids"] = (
-                    encoded_inputs["token_type_ids"] + [pad_token_type_id] * difference
-                )
-            if "special_tokens_mask" in encoded_inputs:
-                encoded_inputs["special_tokens_mask"] = encoded_inputs["special_tokens_mask"] + [1] * difference
-            encoded_inputs['input_ids'] = required_input + [pad_token_id] * difference
-        elif side == "left":
-            if return_attention_mask:
-                encoded_inputs["attention_mask"] = [0] * difference + encoded_inputs["attention_mask"]
-            if "token_type_ids" in encoded_inputs:
-                encoded_inputs["token_type_ids"] = [pad_token_type_id] * difference + encoded_inputs[
-                    "token_type_ids"
-                ]
-            if "special_tokens_mask" in encoded_inputs:
-                encoded_inputs["special_tokens_mask"] = [1] * difference + encoded_inputs["special_tokens_mask"]
-            encoded_inputs['input_ids'] = [pad_token_id] * difference + required_input
-        else:
-            raise ValueError(f"Invalid padding strategy:{side}")
-        
-    # and as torch tensors
-    if return_attention_mask:
-        encoded_inputs["attention_mask"] = torch.tensor(encoded_inputs["attention_mask"], dtype=torch.bool)
-    if "token_type_ids" in encoded_inputs:
-        encoded_inputs["token_type_ids"] = torch.tensor(encoded_inputs["token_type_ids"], dtype=torch.long)
-    if "special_tokens_mask" in encoded_inputs:
-        encoded_inputs["special_tokens_mask"] = torch.tensor(encoded_inputs["special_tokens_mask"], dtype=torch.bool)
-    encoded_inputs['input_ids'] = torch.tensor(encoded_inputs['input_ids'], dtype=torch.long)
-
-    return encoded_inputs
 
 @dataclass
 class DataCollatorForPreference(DataCollatorMixin):
@@ -216,9 +144,10 @@ class DataCollatorForPreference(DataCollatorMixin):
     Tokenizes and pads prompts (left-padded) and completions (right-padded) separately,
     ensuring EOS tokens are properly added and truncation is tracked.
     """
+    tokenizer: AutoTokenizer
+    # max_prompt_length: int
+    # max_completion_length: int
     pad_token_id: int
-    eos_token_id: int
-    pad_token_type_id: Optional[int] = 0
 
     def __call__(self, raw_features: list[dict]) -> dict[str, torch.Tensor]:
         """Process a batch of preference examples into model inputs.
@@ -234,22 +163,22 @@ class DataCollatorForPreference(DataCollatorMixin):
         rejected_ids = [f["rejected_ids"] for f in raw_features]
 
         # 1) Tokenize prompts: left-pad to handle variable lengths
-        prompt_batch = batch_pad_side(
+        self.tokenizer.padding_side = "left"
+        prompt_batch = self.tokenizer.pad(
             {'input_ids': prompt_ids},
-            pad_token_id=self.pad_token_id,
-            pad_token_type_id=self.pad_token_type_id,
+            padding="longest",
             return_attention_mask=True,
-            side="left",
         )
 
         # 2) Tokenize completions: right-truncate to leave room for EOS token
+        self.tokenizer.padding_side = "right"
 
         # Append EOS token to each completion
         chosen_inputs_with_eos = [
-            ids + [self.eos_token_id] for ids in chosen_ids
+            ids + [self.tokenizer.eos_token_id] for ids in chosen_ids
         ]
         rejected_inputs_with_eos = [
-            ids + [self.eos_token_id] for ids in rejected_ids
+            ids + [self.tokenizer.eos_token_id] for ids in rejected_ids
         ]
 
         # 3) Pad completions to max_completion_length (no further truncation)
@@ -257,21 +186,17 @@ class DataCollatorForPreference(DataCollatorMixin):
             max(len(ids) for ids in chosen_inputs_with_eos),
             max(len(ids) for ids in rejected_inputs_with_eos)
         )
-        chosen_batch = batch_pad_side(
+        chosen_batch = self.tokenizer.pad(
             {"input_ids": chosen_inputs_with_eos},
             max_length=max_completion_length,
-            pad_token_id=self.pad_token_id,
-            pad_token_type_id=self.pad_token_type_id,
+            padding="longest",
             return_attention_mask=True,
-            side="right",
         )
-        rejected_batch = batch_pad_side(
+        rejected_batch = self.tokenizer.pad(
             {"input_ids": rejected_inputs_with_eos},
             max_length=max_completion_length,
-            pad_token_id=self.pad_token_id,
-            pad_token_type_id=self.pad_token_type_id,
+            padding="longest",
             return_attention_mask=True,
-            side="right",
         )
 
         return {
