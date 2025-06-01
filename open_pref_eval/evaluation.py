@@ -56,8 +56,8 @@ def extract_logps(
     rejected_mask = forward_output["rejected_mask"].float()
     logp_vocab_conc_c = forward_output["vocab_concentration_chosen"].float()
     logp_vocab_conc_r = forward_output["vocab_concentration_rejected"].float()
-    chosen_ranks = forward_output["chosen_ranks"].float()
-    rejected_ranks = forward_output["rejected_ranks"].float()
+    # chosen_ranks = forward_output["chosen_ranks"].float()
+    # rejected_ranks = forward_output["rejected_ranks"].float()
 
     # Validate that we have valid completions
     if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
@@ -76,8 +76,8 @@ def extract_logps(
                 mask_rejected=rejected_mask,
                 vocab_concentration_chosen=logp_vocab_conc_c,
                 vocab_concentration_rejected=logp_vocab_conc_r,
-                rank_chosen=chosen_ranks,
-                rank_rejected=rejected_ranks,
+                # rank_chosen=chosen_ranks,
+                # rank_rejected=rejected_ranks,
             )
             # Prefix score outputs with score name
             prefixed_scores = {f"score_{score_name}__{key}": value for key, value in score_results.items()}
@@ -91,7 +91,8 @@ def extract_logps(
             outputs.update(prefixed_scores)
         
         # Use the last score's sigmoid as the main probability
-        outputs["prob"] = outputs[f"score_{score_name}__sigmoid"]
+        k = f"score_{score_name}"
+        outputs["prob"] = outputs[f"{k}__sigmoid"]
     else:
         # Single scoring function
         score_results = score_fn(
@@ -101,12 +102,13 @@ def extract_logps(
             mask_rejected=rejected_mask,
             vocab_concentration_chosen=logp_vocab_conc_c,
             vocab_concentration_rejected=logp_vocab_conc_r,
-            rank_chosen=chosen_ranks,
-            rank_rejected=rejected_ranks,
+            # rank_chosen=chosen_ranks,
+            # rank_rejected=rejected_ranks,
         )
         prefixed_scores = {f"score__{key}": value for key, value in score_results.items()}
         outputs.update(prefixed_scores)
-        outputs["prob"] = outputs["score__sigmoid"]
+        k = "score"
+        outputs["prob"] = outputs[f"{k}__sigmoid"]
 
     # Calculate sequence-level log probabilities and perplexities
     chosen_logp = (chosen_t_logps * chosen_mask).sum(1)
@@ -129,7 +131,9 @@ def extract_logps(
     rejected_weight_logp = ((rejected_t_logps - adjustment_rejected) * rejected_mask).sum(-1) / rejected_mask.sum(-1)
     
     # Clamp policy weights to prevent numerical instability
+    # TODO try using this as a confidence measure
     policy_weights = torch.clamp(torch.exp(chosen_weight_logp + rejected_weight_logp), max=1)
+    outputs["prob_pweighted"] = torch.sigmoid(outputs[f"{k}__log_ratio"] * policy_weights)
 
     # Add all computed metrics to outputs (preserving exact variable names for compatibility)
     outputs.update(
@@ -237,7 +241,8 @@ def eval_dataset(
             for adapter_name in adapter_names:
                 with set_adapter(model, adapter_name):
                     batch_results = extract_logps(model, batch, step, **kwargs)
-                    adapter_name_clean = adapter_name if adapter_name is not None else "none"
+                    # if None then put "none" or "base", if "default" put name of model_path
+                    adapter_name_clean = adapter_name if (adapter_name is not None) else "none"
                     batch_results["adapter"] = [adapter_name_clean] * len(batch_results["prob"])
                     evaluation_data.append(batch_results)
         else:
@@ -374,20 +379,20 @@ def evaluate_models(
         
     dfs_raw = []
     for model_name in model_names:
-        try:
-            model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
+        # try:
+        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
-            df_agg, df_raw = evaluate_model(model, tokenizer, datasets=datasets, **kwargs)
-            df_raw["model"] = model_name
-            clear_mem()
-            dfs_raw.append(df_raw)
+        df_agg, df_raw = evaluate_model(model, tokenizer, datasets=datasets, **kwargs)
+        df_raw["model"] = model_name
+        clear_mem()
+        dfs_raw.append(df_raw)
             
-        except Exception as e:
-            logger.error(f"Failed to evaluate model {model_name}: {e}")
-            continue
+        # except Exception as e:
+        #     logger.error(f"Failed to evaluate model {model_name}: {e}")
+        #     continue
     
     if not dfs_raw:
         logger.error("No models were successfully evaluated")

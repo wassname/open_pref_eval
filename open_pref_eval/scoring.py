@@ -337,19 +337,19 @@ def score_perplexity_ratio(
     # Return inverted scores so lower perplexity = higher score
     return build_output_dict(perp_rejected.log(), perp_chosen.log())
 
-def score_rank_based(
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    rank_chosen: Tensor,
-    rank_rejected: Tensor,
-    **kwargs
-) -> dict:
-    """Score using token ranks instead of log probabilities."""
-    # Convert ranks to log space and average
-    chosen_score = -(torch.log(rank_chosen + EPS) * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
-    rejected_score = -(torch.log(rank_rejected + EPS) * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
+# def score_rank_based(
+#     mask_chosen: Tensor, 
+#     mask_rejected: Tensor, 
+#     rank_chosen: Tensor,
+#     rank_rejected: Tensor,
+#     **kwargs
+# ) -> dict:
+#     """Score using token ranks instead of log probabilities."""
+#     # Convert ranks to log space and average
+#     chosen_score = -(torch.log(rank_chosen + EPS) * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
+#     rejected_score = -(torch.log(rank_rejected + EPS) * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
     
-    return build_output_dict(chosen_score, rejected_score)
+#     return build_output_dict(chosen_score, rejected_score)
 
 # ============================================================================
 # Legacy Function Aliases (for backward compatibility)
