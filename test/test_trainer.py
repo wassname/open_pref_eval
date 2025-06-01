@@ -5,19 +5,19 @@ import pytest
 import numpy as np
 # from parameterized import parameterized
 from datasets import load_dataset
-
+from datasets import disable_caching
 
 # from open_pref_eval.trainer import dummy_dataset, OPEConfig, OPETrainer
 from open_pref_eval.evaluation import evaluate, evaluate_model
 from open_pref_eval.helpers.load_models import load_peft_model
 
 PEFT_MODELS = [
-    "pacozaa/tinyllama-alpaca-lora", # 101mb
+    "pacozaa/tinyllama-alpaca-lora", # 1.1b
 ]
 
 MODELS = [
             # https://huggingface.co/models?other=base_model%3Aadapter%3Aunsloth%2Ftinyllama
-            # "pacozaa/tinyllama-alpaca-lora", # 101mb
+            # "pacozaa/tinyllama-alpaca-lora", # 1.1b
             # "snake7gun/tiny-random-qwen3",
             "HuggingFaceTB/SmolLM2-135M-Instruct",
 
@@ -26,9 +26,10 @@ MODELS = [
 ]
 
 N = 80
+
+disable_caching()
 imdb = load_dataset('wassname/imdb_preferences', split=f'test[:{N}]', keep_in_memory=False)
 datasets = [imdb]
-
 
 @pytest.mark.parametrize(
     "model_name",

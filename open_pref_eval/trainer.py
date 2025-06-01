@@ -9,7 +9,205 @@ from torch import Tensor
 from transformers import AutoTokenizer
 from transformers.data.data_collator import DataCollatorMixin
 import warnings
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from contextlib import contextmanager
+from typing import Union, Optional, Dict, Any
 
+
+@contextmanager
+def set_tokenizer_options(tokenizer, **kwargs):
+    """Temporarily modify tokenizer settings."""
+    original = {}
+    for key, value in kwargs.items():
+        if hasattr(tokenizer, key):
+            original[key] = getattr(tokenizer, key)
+            setattr(tokenizer, key, value)
+    try:
+        yield tokenizer
+    finally:
+        for key, value in original.items():
+            setattr(tokenizer, key, value)
+
+@dataclass
+class PreTokenizer:
+    """Pre-tokenizes preference data with truncation tracking."""
+    tokenizer: PreTrainedTokenizerBase
+    max_length: int = 512
+    max_prompt_length: int = 128
+
+    def __call__(self, batch: Dict[str, str]) -> Dict[str, Any]:
+        """Tokenize preference data row.
+        
+        Args:
+            batch: Row with 'prompt', 'chosen', 'rejected' keys
+            
+        Returns:
+            Tokenized data with truncation flags and masks
+        """
+        out = {}
+
+        # Encode prompt with left truncation
+        with set_tokenizer_options(self.tokenizer, truncation_side="left"):
+            prompt = self.tokenizer.encode_plus(
+                batch["prompt"],
+                add_special_tokens=False,
+                padding=False,
+                truncation=True,
+                max_length=self.max_prompt_length,
+            )["input_ids"]
+            out["prompt_ids"] = prompt
+            out["prompt_truncated"] = len(prompt) >= self.max_prompt_length
+        
+        # Calculate max completion length
+        max_ans_length = (
+            self.max_length - len(prompt)
+        )
+
+        # Tokenize completions
+        with set_tokenizer_options(self.tokenizer, padding_side="right", truncation_side="right"):
+            for key in ["chosen", "rejected"]:
+                # Tokenize completion
+                ans = self.tokenizer.encode_plus(
+                    batch[key],
+                    add_special_tokens=False,
+                    truncation=True,
+                    max_length=max_ans_length,
+                )["input_ids"]
+                
+                # Track truncation
+                out[key + "_truncated"] = len(ans) >= max_ans_length
+                
+                # Store without padding - collator will handle padding
+                out[key+'_ids'] = ans
+
+        return out
+
+
+def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase, 
+                    max_length: int = 512, max_prompt_length: int = 128,
+                    batch_size: int = 1000, verbose: bool = False):
+    """Pre-tokenize a preference dataset with memory-efficient batching.
+    
+    Args:
+        dataset: HuggingFace dataset with 'prompt', 'chosen', 'rejected' columns
+        tokenizer: Tokenizer to use
+        max_length: Maximum sequence length
+        max_prompt_length: Maximum prompt length
+        batch_size: Batch size for processing (to avoid OOM)
+        verbose: Whether to report truncation statistics
+        
+    Returns:
+        Tokenized dataset with added columns for tokenized data and truncation flags
+    """
+    pre_tokenizer = PreTokenizer(
+        tokenizer=tokenizer,
+        max_length=max_length, 
+        max_prompt_length=max_prompt_length
+    )
+    
+    # Process in batches to avoid OOM
+    logger.info(f"Tokenizing dataset with {len(dataset)} examples in batches of {batch_size}")
+    tokenized_ds = dataset.map(
+        pre_tokenizer,
+        batched=False,
+        batch_size=batch_size,
+        desc="Tokenizing"
+    ).select_columns(
+        ["prompt_ids", "chosen_ids", "rejected_ids", 
+         "prompt_truncated", "chosen_truncated", "rejected_truncated"]
+    )
+    
+    # Report truncation statistics
+    if verbose and len(tokenized_ds) > 0:
+        import numpy as np
+        prompt_trunc = np.mean(tokenized_ds['prompt_truncated'])
+        chosen_trunc = np.mean(tokenized_ds['chosen_truncated'])
+        rejected_trunc = np.mean(tokenized_ds['rejected_truncated'])
+        
+        if prompt_trunc > 0.2:
+            logger.error(f"Prompt rows truncated {prompt_trunc:.2%} > 20%")
+        if chosen_trunc > 0.2:
+            logger.error(f"Chosen rows truncated {chosen_trunc:.2%} > 20%") 
+        if rejected_trunc > 0.2:
+            logger.error(f"Rejected rows truncated {rejected_trunc:.2%} > 20%")
+
+        logger.info(f"Truncation rates - Prompt: {prompt_trunc:.2%}, "
+                   f"Chosen: {chosen_trunc:.2%}, Rejected: {rejected_trunc:.2%}")
+    
+    return tokenized_ds
+
+def batch_pad_side(
+    encoded_inputs,
+    pad_token_id: int,
+    side: str,
+    max_length: Optional[int]= None,
+    return_attention_mask: Optional[bool] = None,
+    pad_token_type_id: Optional[int] = None,
+) -> dict:
+    """
+    Pad encoded inputs (on left/right and up to predefined length or max length in the batch)
+
+    Args:
+        encoded_inputs:
+            Dictionary of tokenized inputs (`List[int]`) or batch of tokenized inputs (`List[List[int]]`).
+        max_length: maximum length of the returned list and optionally padding length (see below).
+            Will truncate by taking into account the special tokens.
+        side:
+            The side on which the model should have padding applied. Should be selected between ['right', 'left'].
+            Default value is picked from the class attribute of the same name.
+        return_attention_mask:
+            (optional) Set to False to avoid returning attention mask (default: set to model specifics)
+
+    modified from https://github.com/huggingface/transformers/blob/main/src/transformers/tokenization_utils_base.py#L3672
+    """
+    # FIXME this seems to be for one row, not a batch, we need to
+    required_input = encoded_inputs['input_ids']
+
+    if max_length is None:
+        max_length = max([len(ids) for ids in encoded_inputs['input_ids']])
+
+    needs_to_be_padded = len(required_input) != max_length
+
+    # Initialize attention mask if not present.
+    if return_attention_mask and "attention_mask" not in encoded_inputs:
+        encoded_inputs["attention_mask"] = [1] * len(required_input)
+
+    if needs_to_be_padded:
+        difference = max_length - len(required_input)
+
+        if side == "right":
+            if return_attention_mask:
+                encoded_inputs["attention_mask"] = encoded_inputs["attention_mask"] + [0] * difference
+            if "token_type_ids" in encoded_inputs:
+                encoded_inputs["token_type_ids"] = (
+                    encoded_inputs["token_type_ids"] + [pad_token_type_id] * difference
+                )
+            if "special_tokens_mask" in encoded_inputs:
+                encoded_inputs["special_tokens_mask"] = encoded_inputs["special_tokens_mask"] + [1] * difference
+            encoded_inputs['input_ids'] = required_input + [pad_token_id] * difference
+        elif side == "left":
+            if return_attention_mask:
+                encoded_inputs["attention_mask"] = [0] * difference + encoded_inputs["attention_mask"]
+            if "token_type_ids" in encoded_inputs:
+                encoded_inputs["token_type_ids"] = [pad_token_type_id] * difference + encoded_inputs[
+                    "token_type_ids"
+                ]
+            if "special_tokens_mask" in encoded_inputs:
+                encoded_inputs["special_tokens_mask"] = [1] * difference + encoded_inputs["special_tokens_mask"]
+            encoded_inputs['input_ids'] = [pad_token_id] * difference + required_input
+        else:
+            raise ValueError(f"Invalid padding strategy:{side}")
+        
+    # and as torch tensors
+    if return_attention_mask:
+        encoded_inputs["attention_mask"] = torch.tensor(encoded_inputs["attention_mask"], dtype=torch.bool)
+    if "token_type_ids" in encoded_inputs:
+        encoded_inputs["token_type_ids"] = torch.tensor(encoded_inputs["token_type_ids"], dtype=torch.long)
+    if "special_tokens_mask" in encoded_inputs:
+        encoded_inputs["special_tokens_mask"] = torch.tensor(encoded_inputs["special_tokens_mask"], dtype=torch.bool)
+    encoded_inputs['input_ids'] = torch.tensor(encoded_inputs['input_ids'], dtype=torch.long)
+
+    return encoded_inputs
 
 @dataclass
 class DataCollatorForPreference(DataCollatorMixin):
@@ -18,10 +216,9 @@ class DataCollatorForPreference(DataCollatorMixin):
     Tokenizes and pads prompts (left-padded) and completions (right-padded) separately,
     ensuring EOS tokens are properly added and truncation is tracked.
     """
-    tokenizer: AutoTokenizer
-    max_prompt_length: int
-    max_completion_length: int
     pad_token_id: int
+    eos_token_id: int
+    pad_token_type_id: Optional[int] = 0
 
     def __call__(self, raw_features: list[dict]) -> dict[str, torch.Tensor]:
         """Process a batch of preference examples into model inputs.
@@ -32,68 +229,50 @@ class DataCollatorForPreference(DataCollatorMixin):
         Returns:
             Dict with tokenized and padded inputs for prompts, chosen, and rejected completions
         """
-        prompts = [f["prompt"] for f in raw_features]
-        chosen_completions = [f["chosen"] for f in raw_features]
-        rejected_completions = [f["rejected"] for f in raw_features]
+        prompt_ids = [f["prompt_ids"] for f in raw_features]
+        chosen_ids = [f["chosen_ids"] for f in raw_features]
+        rejected_ids = [f["rejected_ids"] for f in raw_features]
 
-        # 1) Tokenize prompts: left-pad & truncate to handle variable lengths
-        self.tokenizer.padding_side = "left"
-        self.tokenizer.truncation_side = "left"
-        prompt_batch = self.tokenizer(
-            prompts,
-            add_special_tokens=False,
-            truncation=True,
-            max_length=self.max_prompt_length,
-            padding="longest",
-            return_tensors="pt",
+        # 1) Tokenize prompts: left-pad to handle variable lengths
+        prompt_batch = batch_pad_side(
+            {'input_ids': prompt_ids},
+            pad_token_id=self.pad_token_id,
+            pad_token_type_id=self.pad_token_type_id,
+            return_attention_mask=True,
+            side="left",
         )
 
         # 2) Tokenize completions: right-truncate to leave room for EOS token
-        self.tokenizer.padding_side = "right"
-        self.tokenizer.truncation_side = "right"
-        completion_max_length = self.max_completion_length - 1  # Reserve space for EOS
-        
-        tokenized_chosen = self.tokenizer(
-            chosen_completions,
-            add_special_tokens=False,
-            truncation=True,
-            max_length=completion_max_length,
-        )
-        tokenized_rejected = self.tokenizer(
-            rejected_completions,
-            add_special_tokens=False,
-            truncation=True,
-            max_length=completion_max_length,
-        )
-        
+
         # Append EOS token to each completion
         chosen_inputs_with_eos = [
-            ids + [self.tokenizer.eos_token_id] for ids in tokenized_chosen["input_ids"]
+            ids + [self.eos_token_id] for ids in chosen_ids
         ]
         rejected_inputs_with_eos = [
-            ids + [self.tokenizer.eos_token_id] for ids in tokenized_rejected["input_ids"]
+            ids + [self.eos_token_id] for ids in rejected_ids
         ]
 
         # 3) Pad completions to max_completion_length (no further truncation)
-        chosen_batch = self.tokenizer.pad(
+        max_completion_length = max(
+            max(len(ids) for ids in chosen_inputs_with_eos),
+            max(len(ids) for ids in rejected_inputs_with_eos)
+        )
+        chosen_batch = batch_pad_side(
             {"input_ids": chosen_inputs_with_eos},
-            max_length=self.max_completion_length,
-            padding="longest",
-            return_tensors="pt",
+            max_length=max_completion_length,
+            pad_token_id=self.pad_token_id,
+            pad_token_type_id=self.pad_token_type_id,
+            return_attention_mask=True,
+            side="right",
         )
-        rejected_batch = self.tokenizer.pad(
+        rejected_batch = batch_pad_side(
             {"input_ids": rejected_inputs_with_eos},
-            max_length=self.max_completion_length,
-            padding="longest",
-            return_tensors="pt",
+            max_length=max_completion_length,
+            pad_token_id=self.pad_token_id,
+            pad_token_type_id=self.pad_token_type_id,
+            return_attention_mask=True,
+            side="right",
         )
-
-        # Track truncation statistics for monitoring
-        prompt_truncation = self._calculate_truncation_rate(prompt_batch, self.max_prompt_length)
-        chosen_truncation = self._calculate_truncation_rate(chosen_batch, self.max_completion_length)
-        rejected_truncation = self._calculate_truncation_rate(rejected_batch, self.max_completion_length)
-        
-        self._log_truncation_warnings(prompt_truncation, chosen_truncation, rejected_truncation)
 
         return {
             "prompt_input_ids": prompt_batch["input_ids"],
@@ -102,22 +281,7 @@ class DataCollatorForPreference(DataCollatorMixin):
             "chosen_attention_mask": chosen_batch["attention_mask"],
             "rejected_input_ids": rejected_batch["input_ids"],
             "rejected_attention_mask": rejected_batch["attention_mask"],
-            "prompt_truncation": prompt_truncation,
-            "chosen_truncation": chosen_truncation,
-            "rejected_truncation": rejected_truncation,
         }
-
-    def _calculate_truncation_rate(self, batch: dict, max_length: int) -> torch.Tensor:
-        """Calculate the fraction of sequences that were truncated."""
-        attention_mask = batch['attention_mask']
-        sequence_lengths = attention_mask.sum(dim=1)
-        was_truncated = (sequence_lengths == max_length).float()
-        return was_truncated
-    
-    def _log_truncation_warnings(self, prompt_trunc: torch.Tensor, chosen_trunc: torch.Tensor, rejected_trunc: torch.Tensor):
-        """Log warnings if significant truncation is detected."""
-        if ( prompt_trunc.mean() > 0) or (chosen_trunc.mean() > 0) or (rejected_trunc.mean() > 0):
-            warnings.warn("Truncation detected in some sequences. Consider adjusting max lengths.")
 
 
 def concatenated_inputs(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:

@@ -18,7 +18,7 @@ from .datasets import ds2name, get_default_datasets
 from .helpers.mem import clear_mem
 from .helpers.peft import is_peft_model, set_adapter
 from .scoring import score_ipo
-from .trainer import DataCollatorForPreference, concatenated_forward
+from .trainer import DataCollatorForPreference, concatenated_forward, tokenize_dataset
 
 
 def extract_logps(
@@ -114,9 +114,6 @@ def extract_logps(
         # Debug: completion length, for checking if the model is biased
         _l_chosen=(batch["chosen_input_ids"] > 0).sum(-1),
         _l_rejected=(batch["rejected_input_ids"] > 0).sum(-1),
-        _policy_weights=policy_weights,
-        _chosen_weight_logp=chosen_weight_logp,
-        _rejected_weight_logp=rejected_weight_logp,
     )
     
     if include_raw:
@@ -179,16 +176,22 @@ def eval_dataset(
     assert max_length > max_prompt_length, (
         f"max_length {max_length} must be greater than max_prompt_length {max_prompt_length}"
     )
+
+    tokenized_datasets = tokenize_dataset(
+        dataset=dataset,
+        tokenizer=tokenizer,
+        max_prompt_length=max_prompt_length,
+        max_length=max_length,
+        verbose=verbose>=1,
+    )
     
     # Setup data collator and loader
     data_collator = DataCollatorForPreference(
         pad_token_id=tokenizer.pad_token_id,
-        tokenizer=tokenizer,
-        max_prompt_length=max_prompt_length,
-        max_completion_length=max_length - max_prompt_length,
+        eos_token_id=tokenizer.eos_token_id,
     )
     eval_dataloader = DataLoader(
-        dataset,
+        tokenized_datasets,
         batch_size=batch_size,
         collate_fn=data_collator,
         num_workers=num_workers,
@@ -260,11 +263,7 @@ def eval_datasets(
     """
     dfs = []
     for dataset in tqdm(datasets, disable=not verbose, unit="dataset"):
-        try:
-            df = eval_dataset(model, tokenizer, dataset, verbose=verbose, **kwargs)
-        except Exception as e:
-            logger.exception(f"Failed to evaluate dataset {ds2name(dataset)}: {e}")
-            continue
+        df = eval_dataset(model, tokenizer, dataset, verbose=verbose, **kwargs)
         dfs.append(df)
         clear_mem()
     
