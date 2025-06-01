@@ -168,6 +168,7 @@ class DataCollatorForPreference(DataCollatorMixin):
             {'input_ids': prompt_ids},
             padding="longest",
             return_attention_mask=True,
+            return_tensors="pt",
         )
 
         # 2) Tokenize completions: right-truncate to leave room for EOS token
@@ -190,12 +191,14 @@ class DataCollatorForPreference(DataCollatorMixin):
             {"input_ids": chosen_inputs_with_eos},
             max_length=max_completion_length,
             padding="longest",
+            return_tensors="pt",
             return_attention_mask=True,
         )
         rejected_batch = self.tokenizer.pad(
             {"input_ids": rejected_inputs_with_eos},
             max_length=max_completion_length,
             padding="longest",
+            return_tensors="pt",
             return_attention_mask=True,
         )
 
