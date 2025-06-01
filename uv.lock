@@ -1501,6 +1501,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "anycache" },
+    { name = "hf-xet" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "matplotlib" },
@@ -1533,6 +1534,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "anycache", specifier = ">=2.4.0" },
+    { name = "hf-xet", specifier = ">=1.1.2" },
     { name = "ipykernel", specifier = ">=6.29" },
     { name = "ipywidgets", specifier = ">=8.1" },
     { name = "matplotlib", specifier = ">=3.9" },

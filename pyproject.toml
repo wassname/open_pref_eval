@@ -15,7 +15,7 @@ dependencies = [
   "torch>=2.3",
   "jaxtyping>=0.2",
   "einops>=0.8",
-  "activation-store",
+  # "activation-store",
   "baukit",
   "loguru>=0.7",
   "tqdm>=4.66",
@@ -33,6 +33,7 @@ dev = [
   "parameterized>=0.9",
   "anycache>=2.4.0",
   "statsmodels>=0.14.4",
+  "hf-xet>=1.1.2",
 ]
 peft = [
   "peft>=0.15.2",
@@ -47,5 +48,5 @@ where = ["."]  # search the root directory
 include = ["open_pref_eval*"]
 
 [tool.uv.sources]
-activation-store = { git = "https://github.com/wassname/activation_store.git" }
+# activation-store = { git = "https://github.com/wassname/activation_store.git" }
 baukit = { git = "https://github.com/davidbau/baukit.git" }
