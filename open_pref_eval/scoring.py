@@ -19,15 +19,15 @@ def build_output_dict(chosen_log_score: Tensor, rejected_log_score: Tensor) -> d
         'rejected_log_score': rejected_log_score,
     }
 
-def log_softmax_normalize(log_values: Tensor, mask: Tensor) -> Tensor:
-    """Normalize log values using log-softmax, masking out padding tokens."""
-    masked_log_values = log_values.masked_fill(mask == 0, float('-inf'))
-    return masked_log_values - torch.logsumexp(masked_log_values, dim=-1, keepdim=True)
+# def log_softmax_normalize(log_values: Tensor, mask: Tensor) -> Tensor:
+#     """Normalize log values using log-softmax, masking out padding tokens."""
+#     masked_log_values = log_values.masked_fill(mask == 0, float('-inf'))
+#     return masked_log_values - torch.logsumexp(masked_log_values, dim=-1, keepdim=True)
 
-def prob_normalize(values: Tensor, mask: Tensor) -> Tensor:
-    """Normalize probability values, handling masked tokens."""
-    masked_values = values * mask
-    return masked_values / (masked_values.sum(-1, keepdim=True) + EPS)
+# def prob_normalize(values: Tensor, mask: Tensor) -> Tensor:
+#     """Normalize probability values, handling masked tokens."""
+#     masked_values = values * mask
+#     return masked_values / (masked_values.sum(-1, keepdim=True) + EPS)
 
 def first_nonzero_index(x: Tensor, dim: int = 1) -> Tensor:
     """Get the first non-zero element in a tensor along the specified dimension."""
@@ -204,73 +204,6 @@ def score_confidence_weighted(
     
     return build_output_dict(chosen_score, rejected_score)
 
-# ============================================================================
-# Uncertainty-Aware Scoring Functions  
-# ============================================================================
-
-def score_with_vocab_uncertainty(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    vocab_concentration_chosen: Tensor,
-    vocab_concentration_rejected: Tensor,
-    alpha: float = 1.0,
-    **kwargs
-) -> dict:
-    """Score with uncertainty weighting (WPO-style)."""
-    # Adjust log probabilities by vocabulary concentration
-    log_prob_chosen_adj = log_prob_chosen - vocab_concentration_chosen * alpha
-    log_prob_rejected_adj = log_prob_rejected - vocab_concentration_rejected * alpha
-    
-    chosen_score = (log_prob_chosen_adj * mask_chosen).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)
-    rejected_score = (log_prob_rejected_adj * mask_rejected).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-def score_vocab_precision_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    vocab_concentration_chosen: Tensor,
-    vocab_concentration_rejected: Tensor,
-    **kwargs
-) -> dict:
-    """Score with precision weighting (uncertainty as variance)."""
-    # Higher concentration = higher uncertainty, so use inverse as precision
-    precision_chosen = torch.exp(-vocab_concentration_chosen) * mask_chosen
-    precision_rejected = torch.exp(-vocab_concentration_rejected) * mask_rejected
-    
-    chosen_score = (log_prob_chosen * precision_chosen).sum(-1) / (precision_chosen.sum(-1) + EPS)
-    rejected_score = (log_prob_rejected * precision_rejected).sum(-1) / (precision_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-def score_vocab_information_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    vocab_concentration_chosen: Tensor,
-    vocab_concentration_rejected: Tensor,
-    **kwargs
-) -> dict:
-    """Score weighted by token informativeness (inverse of concentration)."""
-    max_conc = max(vocab_concentration_chosen.max(), vocab_concentration_rejected.max())
-    
-    # Higher concentration = less informative
-    info_chosen = (max_conc - vocab_concentration_chosen) * mask_chosen
-    info_rejected = (max_conc - vocab_concentration_rejected) * mask_rejected
-    
-    # Normalize to get weights
-    info_weights_chosen = torch.softmax(info_chosen, dim=-1) * mask_chosen
-    info_weights_rejected = torch.softmax(info_rejected, dim=-1) * mask_rejected
-    
-    chosen_score = (log_prob_chosen * info_weights_chosen).sum(-1) / (info_weights_chosen.sum(-1) + EPS)
-    rejected_score = (log_prob_rejected * info_weights_rejected).sum(-1) / (info_weights_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
 
 # ============================================================================
 # Divergence-Based Scoring Functions
@@ -336,20 +269,6 @@ def score_perplexity_ratio(
     
     # Return inverted scores so lower perplexity = higher score
     return build_output_dict(perp_rejected.log(), perp_chosen.log())
-
-def score_rank_based(
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    rank_chosen: Tensor,
-    rank_rejected: Tensor,
-    **kwargs
-) -> dict:
-    """Score using token ranks instead of log probabilities."""
-    # Convert ranks to log space and average
-    chosen_score = -(torch.log(rank_chosen + EPS) * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
-    rejected_score = -(torch.log(rank_rejected + EPS) * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
 
 # ============================================================================
 # Legacy Function Aliases (for backward compatibility)

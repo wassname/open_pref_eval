@@ -54,10 +54,6 @@ def extract_logps(
     rejected_t_logps = forward_output["rejected_logps"].float()
     chosen_mask = forward_output["chosen_mask"].float()
     rejected_mask = forward_output["rejected_mask"].float()
-    logp_vocab_conc_c = forward_output["vocab_concentration_chosen"].float()
-    logp_vocab_conc_r = forward_output["vocab_concentration_rejected"].float()
-    chosen_ranks = forward_output["chosen_ranks"].float()
-    rejected_ranks = forward_output["rejected_ranks"].float()
 
     # Validate that we have valid completions
     if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
@@ -74,10 +70,6 @@ def extract_logps(
                 log_prob_rejected=rejected_t_logps,
                 mask_chosen=chosen_mask,
                 mask_rejected=rejected_mask,
-                vocab_concentration_chosen=logp_vocab_conc_c,
-                vocab_concentration_rejected=logp_vocab_conc_r,
-                rank_chosen=chosen_ranks,
-                rank_rejected=rejected_ranks,
             )
             # Prefix score outputs with score name
             prefixed_scores = {f"score_{score_name}__{key}": value for key, value in score_results.items()}
@@ -99,10 +91,6 @@ def extract_logps(
             log_prob_rejected=rejected_t_logps,
             mask_chosen=chosen_mask,
             mask_rejected=rejected_mask,
-            vocab_concentration_chosen=logp_vocab_conc_c,
-            vocab_concentration_rejected=logp_vocab_conc_r,
-            rank_chosen=chosen_ranks,
-            rank_rejected=rejected_ranks,
         )
         prefixed_scores = {f"score__{key}": value for key, value in score_results.items()}
         outputs.update(prefixed_scores)
@@ -115,21 +103,6 @@ def extract_logps(
     # Calculate perplexity for each completion
     chosen_ppl = torch.exp(-chosen_logp / chosen_mask.sum(1))
     rejected_ppl = torch.exp(-rejected_logp / rejected_mask.sum(1))
-
-    # Compute policy weights as in Eq (2) of the WPO paper: https://huggingface.co/papers/2406.11827
-    # This measures how well-calibrated the model's confidence is
-    adjustment_chosen = torch.logsumexp(
-        2 * forward_output["chosen_logits"].softmax(dim=-1), dim=-1
-    )  # Vocabulary concentration adjustment
-    chosen_weight_logp = ((chosen_t_logps - adjustment_chosen) * chosen_mask).sum(-1) / chosen_mask.sum(-1)
-
-    adjustment_rejected = torch.logsumexp(
-        2 * forward_output["rejected_logits"].softmax(dim=-1), dim=-1
-    )  # Vocabulary concentration adjustment  
-    rejected_weight_logp = ((rejected_t_logps - adjustment_rejected) * rejected_mask).sum(-1) / rejected_mask.sum(-1)
-    
-    # Clamp policy weights to prevent numerical instability
-    policy_weights = torch.clamp(torch.exp(chosen_weight_logp + rejected_weight_logp), max=1)
 
     # Add all computed metrics to outputs (preserving exact variable names for compatibility)
     outputs.update(
