@@ -13,16 +13,15 @@ from open_pref_eval.helpers.peft_utils import load_hf_or_peft_model
 
 PEFT_MODELS = [
     "pacozaa/tinyllama-alpaca-lora", # 1.1b
+    "bunnycore/SmolLM2-1.7B-lora_model",
+    # "wassname/qwen-7B-codefourchan-QLoRA",
 ]
 
 MODELS = [
-            # https://huggingface.co/models?other=base_model%3Aadapter%3Aunsloth%2Ftinyllama
-            # "pacozaa/tinyllama-alpaca-lora", # 1.1b
-            # "snake7gun/tiny-random-qwen3",
+            "snake7gun/tiny-random-qwen3",
             "HuggingFaceTB/SmolLM2-135M-Instruct",
 
-            # ["gepardzik/LLama-3-8b-rogue-lora"],
-            # ["t5"], # TODO make it work for encoder_decoder
+            # "gepardzik/LLama-3-8b-rogue-lora",
 ]
 
 N = 80
