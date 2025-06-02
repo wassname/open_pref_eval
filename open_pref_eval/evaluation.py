@@ -16,7 +16,7 @@ from transformers import (
 
 from .datasets import ds2name, get_default_datasets
 from .helpers.mem import clear_mem
-from .helpers.peft import is_peft_model, set_adapter
+from .helpers.peft_utils import is_peft_model, set_adapter
 from .scoring import score_ipo
 from .trainer import DataCollatorForPreference, concatenated_forward, tokenize_dataset
 
@@ -351,6 +351,8 @@ def evaluate_models(
             tokenizer = AutoTokenizer.from_pretrained(model_name)
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
+
+            # TODO if peft
 
             df_agg, df_raw = evaluate_model(model, tokenizer, datasets=datasets, **kwargs)
             df_raw["model"] = model_name

@@ -9,7 +9,7 @@ from datasets import disable_caching
 
 # from open_pref_eval.trainer import dummy_dataset, OPEConfig, OPETrainer
 from open_pref_eval.evaluation import evaluate, evaluate_model
-from open_pref_eval.helpers.load_models import load_peft_model
+from open_pref_eval.helpers.peft_utils import load_hf_or_peft_model
 
 PEFT_MODELS = [
     "pacozaa/tinyllama-alpaca-lora", # 1.1b
@@ -33,11 +33,19 @@ datasets = [imdb]
 
 @pytest.mark.parametrize(
     "model_name",
+    PEFT_MODELS+ MODELS
+)
+def test_loading(model_name):
+    model, tokenizer = load_hf_or_peft_model(model_name)
+
+
+@pytest.mark.parametrize(
+    "model_name",
     PEFT_MODELS
 )
 def test_evaluate_peft_model( model_name):
     print('testing', model_name)
-    model, tokenizer = load_peft_model(model_name)
+    model, tokenizer = load_hf_or_peft_model(model_name)
 
     df, df_raw = evaluate_model(
         model=model,
@@ -63,3 +71,17 @@ def test_evaluate(model_name):
         )
     print(df_agg)
     assert df_agg['correct'].iloc[0]>0.5
+
+
+def test_datasets(dataset):
+    model_name = MODELS[0]
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from open_pref_eval.evaluation import evaluate_model
+    from open_pref_eval.helpers.tokenize import tokenize_dataset
+    from open_pref_eval.helpers.datasets import get_default_datasets
+    datasets = get_default_datasets(dataset)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    for ds in datasets:
+        print(f"Dataset: {ds}")
+        tokenize_dataset(ds, tokenizer, verbose=True)
+
