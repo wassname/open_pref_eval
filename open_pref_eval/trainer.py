@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Union, Optional
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,6 +28,35 @@ def set_tokenizer_options(tokenizer, **kwargs):
         for key, value in original.items():
             setattr(tokenizer, key, value)
 
+# Use tokenizer.apply_chat_template() to handle chat templates
+def apply_chat_template_to_completion(tokenizer, prompt, completion):
+    """Apply chat template to a single completion."""
+    return tokenizer.apply_chat_template(
+        conversation=[{"role":"assistant", "content": f"{prompt.rstrip()+' '}<|split|>{completion}"}],
+        add_generation_prompt=False,
+        add_special_tokens=True,
+        tokenize=False
+    ).split('<|split|>')
+
+# https://github.com/chujiezheng/chat_templates/blob/main/chat_templates/falcon-instruct.jinja
+FALCAN_CHAT_TEMPLATE = """{% if messages[0]['role'] == 'system' %}
+    {% set system_message = messages[0]['content'] %}
+    {% set messages = messages[1:] %}
+{% else %}
+    {% set system_message = '' %}
+{% endif %}
+
+{{ system_message | trim }}
+{% for message in messages %}
+    {% set content = message['content'].replace('\r\n', '\n').replace('\n\n', '\n') %}
+    {{ '\n\n' + message['role'] | capitalize + ': ' + content | trim }}
+{% endfor %}
+
+{% if add_generation_prompt %}
+    {{ '\n\nAssistant:' }}
+{% endif %}"""
+
+
 @dataclass
 class PreTokenizer:
     """Pre-tokenizes preference data with truncation tracking."""
@@ -45,6 +74,16 @@ class PreTokenizer:
             Tokenized data with truncation flags and masks
         """
         out = {}
+        
+        if self.tokenizer.chat_template is None:
+            logger.warning(
+                "No chat template set for tokenizer, using default FALCAN INSTRUCTR template."
+            )
+            self.tokenizer.chat_template = FALCAN_CHAT_TEMPLATE
+        
+        # TODO handle both being messages
+        batch['prompt'], batch['chosen'] = apply_chat_template_to_completion(self.tokenizer, batch["prompt"], batch["chosen"])
+        batch['rejected'] = apply_chat_template_to_completion(self.tokenizer, batch["prompt"], batch["rejected"])[1]
 
         # Encode prompt with left truncation
         with set_tokenizer_options(self.tokenizer, truncation_side="left"):
@@ -118,12 +157,16 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
     )
     
     # Report truncation statistics
-    if verbose and len(tokenized_ds) > 0:
-        import numpy as np
-        prompt_trunc = np.mean(tokenized_ds['prompt_truncated'])
-        chosen_trunc = np.mean(tokenized_ds['chosen_truncated'])
-        rejected_trunc = np.mean(tokenized_ds['rejected_truncated'])
-        
+    
+    ds_qc = tokenized_ds
+    if isinstance(tokenized_ds, dict):
+        ds_qc = next(iter(tokenized_ds.values()))
+    ds_qc = ds_qc.with_format("torch")
+    if len(tokenized_ds) > 0:
+        prompt_trunc = torch.mean(ds_qc['prompt_truncated']*1.0)
+        chosen_trunc = torch.mean(ds_qc['chosen_truncated']*1.0)
+        rejected_trunc = torch.mean(ds_qc['rejected_truncated']*1.0)
+
         if prompt_trunc > 0.2:
             logger.error(f"Prompt rows truncated {prompt_trunc:.2%} > 20%")
         if chosen_trunc > 0.2:
@@ -131,8 +174,17 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
         if rejected_trunc > 0.2:
             logger.error(f"Rejected rows truncated {rejected_trunc:.2%} > 20%")
 
+    if verbose > 0:
         logger.info(f"Truncation rates - Prompt: {prompt_trunc:.2%}, "
-                   f"Chosen: {chosen_trunc:.2%}, Rejected: {rejected_trunc:.2%}")
+                    f"Chosen: {chosen_trunc:.2%}, Rejected: {rejected_trunc:.2%}")
+    if verbose > 1:
+        # QC sample decode when verbose
+        row = ds_qc[0]
+        logger.info("=== Sample QC after tokenization ===")
+        logger.info(tokenizer.decode(row['chosen_ids']))
+        logger.info("---")
+        logger.info(tokenizer.decode(row['rejected_ids']))
+        logger.info("=== End QC sample ===")
     
     return tokenized_ds
 
@@ -174,28 +226,21 @@ class DataCollatorForPreference(DataCollatorMixin):
         # 2) Tokenize completions: right-truncate to leave room for EOS token
         self.tokenizer.padding_side = "right"
 
-        # Append EOS token to each completion
-        chosen_inputs_with_eos = [
-            ids + [self.tokenizer.eos_token_id] for ids in chosen_ids
-        ]
-        rejected_inputs_with_eos = [
-            ids + [self.tokenizer.eos_token_id] for ids in rejected_ids
-        ]
 
         # 3) Pad completions to max_completion_length (no further truncation)
         max_completion_length = max(
-            max(len(ids) for ids in chosen_inputs_with_eos),
-            max(len(ids) for ids in rejected_inputs_with_eos)
+            max(len(ids) for ids in chosen_ids),
+            max(len(ids) for ids in rejected_ids)
         )
         chosen_batch = self.tokenizer.pad(
-            {"input_ids": chosen_inputs_with_eos},
+            {"input_ids": chosen_ids},
             max_length=max_completion_length,
             padding="longest",
             return_tensors="pt",
             return_attention_mask=True,
         )
         rejected_batch = self.tokenizer.pad(
-            {"input_ids": rejected_inputs_with_eos},
+            {"input_ids": rejected_ids},
             max_length=max_completion_length,
             padding="longest",
             return_tensors="pt",
@@ -262,6 +307,7 @@ def concatenated_forward(
     batch: dict[str, Union[list, torch.LongTensor]],
     device: Optional[str] = None,
     dtype: Optional[torch.dtype] = None,
+    **kwargs: Any
 ) -> dict[str, Tensor]:
     """Run model forward pass on concatenated chosen/rejected inputs.
 
@@ -308,7 +354,7 @@ def concatenated_forward(
 
     # Run model forward pass with mixed precision
     with torch.autocast(device, dtype):
-        outputs = model(full_input_ids, attention_mask=full_attention_mask, use_cache=False)
+        outputs = model(full_input_ids, attention_mask=full_attention_mask, use_cache=False, **kwargs)
     logits = outputs.logits
 
     # Prepare labels by shifting input_ids (standard language modeling)
@@ -326,6 +372,9 @@ def concatenated_forward(
 
     # Split results back into chosen vs rejected
     prompt_length = prompt_input_ids.shape[1]
+
+    hs_chosen = outputs.hidden_states[:batch_size] if outputs.hidden_states is not None else None
+    hs_rejected = outputs.hidden_states[batch_size:] if outputs.hidden_states is not None else None
     
     output = {
         
@@ -349,6 +398,9 @@ def concatenated_forward(
         # Attention masks for loss computation
         "chosen_mask": loss_mask_shifted[:batch_size][:, prompt_length:],
         "rejected_mask": loss_mask_shifted[batch_size:][:, prompt_length:],
+
+        "hidden_states_chosen": hs_chosen,
+        "hidden_states_rejected": hs_rejected,
     }
 
     return output

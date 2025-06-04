@@ -12,7 +12,9 @@ from open_pref_eval.evaluation import evaluate, evaluate_model
 from open_pref_eval.helpers.peft_utils import load_hf_or_peft_model
 
 PEFT_MODELS = [
-    "pacozaa/tinyllama-alpaca-lora", # 1.1b
+    "llamafactory/tiny-random-Llama-3-lora",
+    # "farpluto/SmolLM-135M-Instruct-Finetune-LoRA",
+    # "pacozaa/tinyllama-alpaca-lora", # 1.1b
     "bunnycore/SmolLM2-1.7B-lora_model",
     # "wassname/qwen-7B-codefourchan-QLoRA",
 ]
@@ -50,6 +52,7 @@ def test_evaluate_peft_model( model_name):
         model=model,
         tokenizer=tokenizer,
         datasets=datasets,
+        verbose=3,
     )
 
     # Only calculate mean for numeric columns
@@ -61,24 +64,31 @@ def test_evaluate_peft_model( model_name):
 
 @pytest.mark.parametrize(
     "model_name",
-    MODELS[:1],
+    MODELS,
 )
 def test_evaluate(model_name):
     df_agg, _ = evaluate(
         model_names=[model_name], datasets=datasets,
         batch_size=4,
-        )
+        verbose=3,
+    )
     print(df_agg)
-    assert df_agg['correct'].iloc[0]>0.5
+    if 'random' in model_name:
+        pass
+    else:
+        assert df_agg['correct'].iloc[0]>0.5
 
 
-def test_datasets(dataset):
-    model_name = MODELS[0]
+@pytest.mark.parametrize(
+    "model_name",
+    MODELS[:2],
+)
+def test_datasets(model_name):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from open_pref_eval.evaluation import evaluate_model
-    from open_pref_eval.helpers.tokenize import tokenize_dataset
-    from open_pref_eval.helpers.datasets import get_default_datasets
-    datasets = get_default_datasets(dataset)
+    from open_pref_eval.trainer import tokenize_dataset
+    from open_pref_eval.datasets import get_default_datasets
+    datasets = get_default_datasets(50)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     for ds in datasets:
         print(f"Dataset: {ds}")

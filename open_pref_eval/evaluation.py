@@ -19,6 +19,7 @@ from .helpers.mem import clear_mem
 from .helpers.peft_utils import is_peft_model, set_adapter
 from .scoring import score_ipo
 from .trainer import DataCollatorForPreference, concatenated_forward, tokenize_dataset
+from open_pref_eval.helpers.peft_utils import load_hf_or_peft_model
 
 
 def extract_logps(
@@ -196,7 +197,6 @@ def eval_dataset(
         collate_fn=data_collator,
         num_workers=num_workers,
         shuffle=False,
-        drop_last=False,
     )
 
     evaluation_data = []
@@ -347,8 +347,7 @@ def evaluate_models(
     dfs_raw = []
     for model_name in model_names:
         try:
-            model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model, tokenizer = load_hf_or_peft_model(model_name, **model_kwargs)
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
 
