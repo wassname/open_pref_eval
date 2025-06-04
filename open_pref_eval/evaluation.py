@@ -8,8 +8,6 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from loguru import logger
 from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizerBase,
 )
@@ -18,8 +16,9 @@ from .datasets import ds2name, get_default_datasets
 from .helpers.mem import clear_mem
 from .helpers.peft_utils import is_peft_model, set_adapter
 from .scoring import score_ipo
-from .trainer import DataCollatorForPreference, concatenated_forward, tokenize_dataset
-from open_pref_eval.helpers.peft_utils import load_hf_or_peft_model
+from .trainer import concatenated_forward
+from .data import tokenize_dataset
+from open_pref_eval.helpers.load_model import load_hf_or_peft_model
 
 
 def extract_logps(
@@ -49,17 +48,19 @@ def extract_logps(
     # Run forward pass through concatenated model
     with torch.no_grad():
         forward_output = concatenated_forward(model, batch)
+    np_mask = 1-batch["prompt_attention_mask"].float()
+    nst_mask = 1 - batch["chosen_special_tokens_mask"].float()
 
     # Extract model outputs and convert to float for numerical stability
     chosen_t_logps = forward_output["chosen_logps"].float()
     rejected_t_logps = forward_output["rejected_logps"].float()
-    chosen_mask = forward_output["chosen_mask"].float()
-    rejected_mask = forward_output["rejected_mask"].float()
+    chosen_mask = forward_output["chosen_mask"].float() * np_mask * nst_mask
+    rejected_mask = forward_output["rejected_mask"].float() * np_mask * nst_mask
 
     # Validate that we have valid completions
     if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
         import warnings
-        warnings.warn(f"Some samples have completions completely masked out. Check the dataset.")
+        warnings.warn("Some samples have completions completely masked out. Check the dataset.")
 
     # Compute preference scores using provided scoring function(s)
     outputs = {}
@@ -121,8 +122,6 @@ def extract_logps(
         outputs.update(
             __chosen_logps=chosen_t_logps,
             __rejected_logps=rejected_t_logps,
-            __chosen_logits=forward_output["mean_chosen_logits"],
-            __rejected_logits=forward_output["mean_rejected_logits"],
             __chosen_mask=chosen_mask,
             __rejected_mask=rejected_mask,
         )
@@ -187,14 +186,9 @@ def eval_dataset(
     )
     
     # Setup data collator and loader
-    data_collator = DataCollatorForPreference(
-        tokenizer=tokenizer,
-        pad_token_id=tokenizer.pad_token_id,
-    )
     eval_dataloader = DataLoader(
         tokenized_datasets,
         batch_size=batch_size,
-        collate_fn=data_collator,
         num_workers=num_workers,
         shuffle=False,
     )

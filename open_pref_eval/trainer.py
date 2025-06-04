@@ -14,292 +14,50 @@ from contextlib import contextmanager
 from typing import Union, Optional, Dict, Any
 
 
-@contextmanager
-def set_tokenizer_options(tokenizer, **kwargs):
-    """Temporarily modify tokenizer settings."""
-    original = {}
-    for key, value in kwargs.items():
-        if hasattr(tokenizer, key):
-            original[key] = getattr(tokenizer, key)
-            setattr(tokenizer, key, value)
-    try:
-        yield tokenizer
-    finally:
-        for key, value in original.items():
-            setattr(tokenizer, key, value)
 
-# Use tokenizer.apply_chat_template() to handle chat templates
-def apply_chat_template_to_completion(tokenizer, prompt, completion):
-    """Apply chat template to a single completion."""
-    return tokenizer.apply_chat_template(
-        conversation=[{"role":"assistant", "content": f"{prompt.rstrip()+' '}<|split|>{completion}"}],
-        add_generation_prompt=False,
-        add_special_tokens=True,
-        tokenize=False
-    ).split('<|split|>')
-
-# https://github.com/chujiezheng/chat_templates/blob/main/chat_templates/falcon-instruct.jinja
-FALCAN_CHAT_TEMPLATE = """{% if messages[0]['role'] == 'system' %}
-    {% set system_message = messages[0]['content'] %}
-    {% set messages = messages[1:] %}
-{% else %}
-    {% set system_message = '' %}
-{% endif %}
-
-{{ system_message | trim }}
-{% for message in messages %}
-    {% set content = message['content'].replace('\r\n', '\n').replace('\n\n', '\n') %}
-    {{ '\n\n' + message['role'] | capitalize + ': ' + content | trim }}
-{% endfor %}
-
-{% if add_generation_prompt %}
-    {{ '\n\nAssistant:' }}
-{% endif %}"""
-
-
-@dataclass
-class PreTokenizer:
-    """Pre-tokenizes preference data with truncation tracking."""
-    tokenizer: PreTrainedTokenizerBase
-    max_length: int = 512
-    max_prompt_length: int = 128
-
-    def __call__(self, batch: Dict[str, str]) -> Dict[str, Any]:
-        """Tokenize preference data row.
+# def concatenated_inputs(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+#     """Concatenate chosen and rejected inputs for efficient batch processing.
+    
+#     Args:
+#         batch: Dict containing prompt, chosen, and rejected input tensors
         
-        Args:
-            batch: Row with 'prompt', 'chosen', 'rejected' keys
-            
-        Returns:
-            Tokenized data with truncation flags and masks
-        """
-        out = {}
-        
-        if self.tokenizer.chat_template is None:
-            logger.warning(
-                "No chat template set for tokenizer, using default FALCAN INSTRUCTR template."
-            )
-            self.tokenizer.chat_template = FALCAN_CHAT_TEMPLATE
-        
-        # TODO handle both being messages
-        batch['prompt'], batch['chosen'] = apply_chat_template_to_completion(self.tokenizer, batch["prompt"], batch["chosen"])
-        batch['rejected'] = apply_chat_template_to_completion(self.tokenizer, batch["prompt"], batch["rejected"])[1]
-
-        # Encode prompt with left truncation
-        with set_tokenizer_options(self.tokenizer, truncation_side="left"):
-            prompt = self.tokenizer.encode_plus(
-                batch["prompt"],
-                add_special_tokens=False,
-                padding=False,
-                truncation=True,
-                max_length=self.max_prompt_length,
-            )["input_ids"]
-            out["prompt_ids"] = prompt
-            out["prompt_truncated"] = len(prompt) >= self.max_prompt_length
-        
-        # Calculate max completion length
-        max_ans_length = (
-            self.max_length - len(prompt)
-        )
-
-        # Tokenize completions
-        with set_tokenizer_options(self.tokenizer, padding_side="right", truncation_side="right"):
-            for key in ["chosen", "rejected"]:
-                # Tokenize completion
-                ans = self.tokenizer.encode_plus(
-                    batch[key],
-                    add_special_tokens=False,
-                    truncation=True,
-                    max_length=max_ans_length,
-                )["input_ids"]
-                
-                # Track truncation
-                out[key + "_truncated"] = len(ans) >= max_ans_length
-                
-                # Store without padding - collator will handle padding
-                out[key+'_ids'] = ans
-
-        return out
-
-
-def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase, 
-                    max_length: int = 512, max_prompt_length: int = 128,
-                    batch_size: int = 1000, verbose: bool = False):
-    """Pre-tokenize a preference dataset with memory-efficient batching.
+#     Returns:
+#         Dict with concatenated tensors for model forward pass
+#     """
+#     output: dict[str, torch.Tensor] = {}
     
-    Args:
-        dataset: HuggingFace dataset with 'prompt', 'chosen', 'rejected' columns
-        tokenizer: Tokenizer to use
-        max_length: Maximum sequence length
-        max_prompt_length: Maximum prompt length
-        batch_size: Batch size for processing (to avoid OOM)
-        verbose: Whether to report truncation statistics
-        
-    Returns:
-        Tokenized dataset with added columns for tokenized data and truncation flags
-    """
-    pre_tokenizer = PreTokenizer(
-        tokenizer=tokenizer,
-        max_length=max_length, 
-        max_prompt_length=max_prompt_length
-    )
+#     # Duplicate prompts to match chosen + rejected structure
+#     output["prompt_input_ids"] = torch.cat(
+#         [batch["prompt_input_ids"], batch["prompt_input_ids"]], dim=0
+#     )
+#     output["prompt_attention_mask"] = torch.cat(
+#         [batch["prompt_attention_mask"], batch["prompt_attention_mask"]], dim=0
+#     )
     
-    # Process in batches to avoid OOM
-    logger.info(f"Tokenizing dataset with {len(dataset)} examples in batches of {batch_size}")
-    tokenized_ds = dataset.map(
-        pre_tokenizer,
-        batched=False,
-        batch_size=batch_size,
-        desc="Tokenizing"
-    ).select_columns(
-        ["prompt_ids", "chosen_ids", "rejected_ids", 
-         "prompt_truncated", "chosen_truncated", "rejected_truncated"]
-    )
+#     # Extract chosen/rejected completion data
+#     chosen_ids = batch["chosen_input_ids"]
+#     rejected_ids = batch["rejected_input_ids"]
+#     chosen_mask = batch["chosen_attention_mask"]
+#     rejected_mask = batch["rejected_attention_mask"]
     
-    # Report truncation statistics
+#     # Find common max completion length
+#     max_completion_length = max(chosen_ids.size(1), rejected_ids.size(1))
+
+#     def pad_right(tensor: torch.Tensor, target_length: int, pad_value: int = 0) -> torch.Tensor:
+#         """Right-pad tensor to target length."""
+#         pad_amount = target_length - tensor.size(1)
+#         return F.pad(tensor, (0, pad_amount), value=pad_value) if pad_amount > 0 else tensor
+
+#     # Pad both to same length and concatenate
+#     chosen_ids_padded = pad_right(chosen_ids, max_completion_length)
+#     rejected_ids_padded = pad_right(rejected_ids, max_completion_length)
+#     chosen_mask_padded = pad_right(chosen_mask, max_completion_length)
+#     rejected_mask_padded = pad_right(rejected_mask, max_completion_length)
     
-    ds_qc = tokenized_ds
-    if isinstance(tokenized_ds, dict):
-        ds_qc = next(iter(tokenized_ds.values()))
-    ds_qc = ds_qc.with_format("torch")
-    if len(tokenized_ds) > 0:
-        prompt_trunc = torch.mean(ds_qc['prompt_truncated']*1.0)
-        chosen_trunc = torch.mean(ds_qc['chosen_truncated']*1.0)
-        rejected_trunc = torch.mean(ds_qc['rejected_truncated']*1.0)
-
-        if prompt_trunc > 0.2:
-            logger.error(f"Prompt rows truncated {prompt_trunc:.2%} > 20%")
-        if chosen_trunc > 0.2:
-            logger.error(f"Chosen rows truncated {chosen_trunc:.2%} > 20%") 
-        if rejected_trunc > 0.2:
-            logger.error(f"Rejected rows truncated {rejected_trunc:.2%} > 20%")
-
-    if verbose > 0:
-        logger.info(f"Truncation rates - Prompt: {prompt_trunc:.2%}, "
-                    f"Chosen: {chosen_trunc:.2%}, Rejected: {rejected_trunc:.2%}")
-    if verbose > 1:
-        # QC sample decode when verbose
-        row = ds_qc[0]
-        logger.info("=== Sample QC after tokenization ===")
-        logger.info(tokenizer.decode(row['chosen_ids']))
-        logger.info("---")
-        logger.info(tokenizer.decode(row['rejected_ids']))
-        logger.info("=== End QC sample ===")
+#     output["completion_input_ids"] = torch.cat((chosen_ids_padded, rejected_ids_padded), dim=0)
+#     output["completion_attention_mask"] = torch.cat((chosen_mask_padded, rejected_mask_padded), dim=0)
     
-    return tokenized_ds
-
-
-@dataclass
-class DataCollatorForPreference(DataCollatorMixin):
-    """Data collator for preference learning that handles prompt-completion pairs.
-    
-    Tokenizes and pads prompts (left-padded) and completions (right-padded) separately,
-    ensuring EOS tokens are properly added and truncation is tracked.
-    """
-    tokenizer: AutoTokenizer
-    # max_prompt_length: int
-    # max_completion_length: int
-    pad_token_id: int
-
-    def __call__(self, raw_features: list[dict]) -> dict[str, torch.Tensor]:
-        """Process a batch of preference examples into model inputs.
-        
-        Args:
-            raw_features: List of dicts with 'prompt', 'chosen', 'rejected' keys
-            
-        Returns:
-            Dict with tokenized and padded inputs for prompts, chosen, and rejected completions
-        """
-        prompt_ids = [f["prompt_ids"] for f in raw_features]
-        chosen_ids = [f["chosen_ids"] for f in raw_features]
-        rejected_ids = [f["rejected_ids"] for f in raw_features]
-
-        # 1) Tokenize prompts: left-pad to handle variable lengths
-        self.tokenizer.padding_side = "left"
-        prompt_batch = self.tokenizer.pad(
-            {'input_ids': prompt_ids},
-            padding="longest",
-            return_attention_mask=True,
-            return_tensors="pt",
-        )
-
-        # 2) Tokenize completions: right-truncate to leave room for EOS token
-        self.tokenizer.padding_side = "right"
-
-
-        # 3) Pad completions to max_completion_length (no further truncation)
-        max_completion_length = max(
-            max(len(ids) for ids in chosen_ids),
-            max(len(ids) for ids in rejected_ids)
-        )
-        chosen_batch = self.tokenizer.pad(
-            {"input_ids": chosen_ids},
-            max_length=max_completion_length,
-            padding="longest",
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        rejected_batch = self.tokenizer.pad(
-            {"input_ids": rejected_ids},
-            max_length=max_completion_length,
-            padding="longest",
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-
-        return {
-            "prompt_input_ids": prompt_batch["input_ids"],
-            "prompt_attention_mask": prompt_batch["attention_mask"],
-            "chosen_input_ids": chosen_batch["input_ids"],
-            "chosen_attention_mask": chosen_batch["attention_mask"],
-            "rejected_input_ids": rejected_batch["input_ids"],
-            "rejected_attention_mask": rejected_batch["attention_mask"],
-        }
-
-
-def concatenated_inputs(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Concatenate chosen and rejected inputs for efficient batch processing.
-    
-    Args:
-        batch: Dict containing prompt, chosen, and rejected input tensors
-        
-    Returns:
-        Dict with concatenated tensors for model forward pass
-    """
-    output: dict[str, torch.Tensor] = {}
-    
-    # Duplicate prompts to match chosen + rejected structure
-    output["prompt_input_ids"] = torch.cat(
-        [batch["prompt_input_ids"], batch["prompt_input_ids"]], dim=0
-    )
-    output["prompt_attention_mask"] = torch.cat(
-        [batch["prompt_attention_mask"], batch["prompt_attention_mask"]], dim=0
-    )
-    
-    # Extract chosen/rejected completion data
-    chosen_ids = batch["chosen_input_ids"]
-    rejected_ids = batch["rejected_input_ids"]
-    chosen_mask = batch["chosen_attention_mask"]
-    rejected_mask = batch["rejected_attention_mask"]
-    
-    # Find common max completion length
-    max_completion_length = max(chosen_ids.size(1), rejected_ids.size(1))
-
-    def pad_right(tensor: torch.Tensor, target_length: int, pad_value: int = 0) -> torch.Tensor:
-        """Right-pad tensor to target length."""
-        pad_amount = target_length - tensor.size(1)
-        return F.pad(tensor, (0, pad_amount), value=pad_value) if pad_amount > 0 else tensor
-
-    # Pad both to same length and concatenate
-    chosen_ids_padded = pad_right(chosen_ids, max_completion_length)
-    rejected_ids_padded = pad_right(rejected_ids, max_completion_length)
-    chosen_mask_padded = pad_right(chosen_mask, max_completion_length)
-    rejected_mask_padded = pad_right(rejected_mask, max_completion_length)
-    
-    output["completion_input_ids"] = torch.cat((chosen_ids_padded, rejected_ids_padded), dim=0)
-    output["completion_attention_mask"] = torch.cat((chosen_mask_padded, rejected_mask_padded), dim=0)
-    
-    return output
+#     return output
 
 
 def concatenated_forward(
@@ -323,10 +81,6 @@ def concatenated_forward(
     Returns:
         Dict containing log probabilities, ranks, and other metrics for chosen/rejected
     """
-    batch_size = batch["prompt_input_ids"].shape[0]
-
-    # Prepare concatenated inputs
-    concatenated_batch = concatenated_inputs(batch)
 
     # Auto-detect device and dtype from model if not provided
     if device is None:
@@ -335,72 +89,48 @@ def concatenated_forward(
         dtype = next(model.parameters()).dtype
     
     # Move tensors to target device
-    concatenated_batch = {k: v.to(device) for k, v in concatenated_batch.items()}
+    batch = {k: v.to(device) for k, v in batch.items()}
 
-    # Extract concatenated components
-    prompt_input_ids = concatenated_batch["prompt_input_ids"]
-    prompt_attention_mask = concatenated_batch["prompt_attention_mask"]
-    completion_input_ids = concatenated_batch["completion_input_ids"]
-    completion_attention_mask = concatenated_batch["completion_attention_mask"]
-
-    # Create full sequences by concatenating prompts and completions
-    full_input_ids = torch.cat((prompt_input_ids, completion_input_ids), dim=1)
-    full_attention_mask = torch.cat((prompt_attention_mask, completion_attention_mask), dim=1)
-    
-    # Create loss mask: ignore prompt tokens, only compute loss on completion tokens
-    loss_mask = torch.cat(
-        (torch.zeros_like(prompt_attention_mask), completion_attention_mask), dim=1
-    )
-
-    # Run model forward pass with mixed precision
-    with torch.autocast(device, dtype):
-        outputs = model(full_input_ids, attention_mask=full_attention_mask, use_cache=False, **kwargs)
-    logits = outputs.logits
-
-    # Prepare labels by shifting input_ids (standard language modeling)
-    labels = torch.roll(full_input_ids, shifts=-1, dims=1)
-    loss_mask_shifted = torch.roll(loss_mask, shifts=-1, dims=1).bool()
-
-    # Mask out invalid label positions
-    labels[~loss_mask_shifted] = 0  # dummy token for masked positions
-    
-    # Compute log probabilities and per-token log probs
-    logprobs = logits.log_softmax(dim=-1)
-    per_token_logprobs = torch.gather(logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
-    per_token_logprobs[~loss_mask_shifted] = 0  # Zero out masked positions
-    per_token_logprobs = torch.roll(per_token_logprobs, shifts=1, dims=1)  # Align with original sequence
-
-    # Split results back into chosen vs rejected
-    prompt_length = prompt_input_ids.shape[1]
-
-    hs_chosen = outputs.hidden_states[:batch_size] if outputs.hidden_states is not None else None
-    hs_rejected = outputs.hidden_states[batch_size:] if outputs.hidden_states is not None else None
-    
+    prompt_attention_mask = batch["prompt_attention_mask"]
     output = {
-        
-        # Input IDs (for debugging/analysis)
-        "chosen_input_ids": full_input_ids[:batch_size][:, prompt_length:],
-        "rejected_input_ids": full_input_ids[batch_size:][:, prompt_length:],
-        "attention_mask": full_attention_mask[:, prompt_length:],
-        
-        # Model outputs
-        "chosen_logits": logits[:batch_size][:, prompt_length:],
-        "rejected_logits": logits[batch_size:][:, prompt_length:],
-        
-        # Per-token log probabilities
-        "chosen_logps": per_token_logprobs[:batch_size][:, prompt_length:],
-        "rejected_logps": per_token_logprobs[batch_size:][:, prompt_length:],
-        
-        # Summary statistics
-        "mean_chosen_logits": logits[:batch_size][loss_mask_shifted[:batch_size]].mean(),
-        "mean_rejected_logits": logits[batch_size:][loss_mask_shifted[batch_size:]].mean(),
-        
-        # Attention masks for loss computation
-        "chosen_mask": loss_mask_shifted[:batch_size][:, prompt_length:],
-        "rejected_mask": loss_mask_shifted[batch_size:][:, prompt_length:],
-
-        "hidden_states_chosen": hs_chosen,
-        "hidden_states_rejected": hs_rejected,
+        "prompt_attention_mask": prompt_attention_mask,
     }
+    for key in ["chosen", "rejected"]:
+        # Create loss mask: ignore prompt tokens, only compute loss on completion tokens
+        input_ids = batch[f"{key}_input_ids"]
+        attention_mask = batch[f"{key}_attention_mask"]
+        loss_mask = torch.cat(
+            (torch.zeros_like(prompt_attention_mask), attention_mask), dim=1
+        )
+
+        # Run model forward pass with mixed precision
+        with torch.autocast(device, dtype):
+            outputs = model(input_ids, attention_mask=attention_mask, use_cache=False, **kwargs)
+        logits = outputs.logits
+
+        # Prepare labels by shifting input_ids (standard language modeling)
+        labels = torch.roll(input_ids, shifts=-1, dims=1)
+        loss_mask_shifted = torch.roll(loss_mask, shifts=-1, dims=1).bool()
+
+        # Mask out invalid label positions
+        labels[~loss_mask_shifted] = 0  # dummy token for masked positions
+        
+        # Compute log probabilities and per-token log probs
+        logprobs = logits.log_softmax(dim=-1)
+        per_token_logprobs = torch.gather(logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+        per_token_logprobs[~loss_mask_shifted] = 0  # Zero out masked positions
+        per_token_logprobs = torch.roll(per_token_logprobs, shifts=1, dims=1)  # Align with original sequence
+
+        hs = outputs.hidden_states if outputs.hidden_states is not None else None
+
+        output.update({
+            f"{key}_logits": logits,
+            f"{key}_logprobs": per_token_logprobs,
+            f"{key}_mask": loss_mask_shifted,
+            f"{key}_input_ids": input_ids,
+            f"{key}_attention_mask": attention_mask,
+            f"{key}_hidden_states": hs,
+            f"{key}_special_tokens_mask": batch.get(f"{key}_special_tokens_mask", None),
+        })
 
     return output

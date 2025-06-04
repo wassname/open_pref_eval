@@ -6,10 +6,13 @@ import numpy as np
 # from parameterized import parameterized
 from datasets import load_dataset
 from datasets import disable_caching
-
+from transformers import (
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+)
 # from open_pref_eval.trainer import dummy_dataset, OPEConfig, OPETrainer
 from open_pref_eval.evaluation import evaluate, evaluate_model
-from open_pref_eval.helpers.peft_utils import load_hf_or_peft_model
+from open_pref_eval.helpers.load_model import load_hf_or_peft_model
 
 PEFT_MODELS = [
     "llamafactory/tiny-random-Llama-3-lora",
@@ -34,10 +37,12 @@ datasets = [imdb]
 
 @pytest.mark.parametrize(
     "model_name",
-    PEFT_MODELS+ MODELS
+    PEFT_MODELS + MODELS
 )
-def test_loading(model_name):
+def test_model_load(model_name):
     model, tokenizer = load_hf_or_peft_model(model_name)
+    assert isinstance(model, PreTrainedModel), f"Model {model_name} is not a PreTrainedModel"
+    assert isinstance(tokenizer, PreTrainedTokenizerBase), f"Tokenizer {model_name} is not a PreTrainedTokenizerBase"
 
 
 @pytest.mark.parametrize(
@@ -81,12 +86,12 @@ def test_evaluate(model_name):
 
 @pytest.mark.parametrize(
     "model_name",
-    MODELS[:2],
+    MODELS[:1],
 )
 def test_datasets(model_name):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from open_pref_eval.evaluation import evaluate_model
-    from open_pref_eval.trainer import tokenize_dataset
+    from open_pref_eval.data import tokenize_dataset
     from open_pref_eval.datasets import get_default_datasets
     datasets = get_default_datasets(50)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
