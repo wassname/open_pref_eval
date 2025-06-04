@@ -173,6 +173,14 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
     Returns:
         Tokenized dataset with added columns for tokenized data and truncation flags
     """
+
+    if tokenizer.pad_token_id is None:
+        warnings.warn(
+            "Tokenizer does not have a pad token set. "
+            "Setting pad token to eos token for preference data."
+        )
+        tokenizer.pad_token = tokenizer.eos_token
+
     pre_tokenizer = PreTokenizer(
         tokenizer=tokenizer,
         max_length=max_length, 
@@ -200,9 +208,9 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
         ds_qc = next(iter(tokenized_ds.values()))
     ds_qc = ds_qc.with_format("torch")
     if len(tokenized_ds) > 0:
-        prompt_trunc = torch.mean(ds_qc['prompt_truncated']*1.0)
-        chosen_trunc = torch.mean(ds_qc['chosen_truncated']*1.0)
-        rejected_trunc = torch.mean(ds_qc['rejected_truncated']*1.0)
+        prompt_trunc = torch.mean((ds_qc['prompt_truncated']>1)*1.0)
+        chosen_trunc = torch.mean((ds_qc['chosen_truncated']>1)*1.0)
+        rejected_trunc = torch.mean((ds_qc['rejected_truncated']>1)*1.0)
 
         if prompt_trunc > 0.2:
             logger.error(f"Prompt rows truncated {prompt_trunc:.2%} > 20%")

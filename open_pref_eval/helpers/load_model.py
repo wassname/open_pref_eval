@@ -26,7 +26,7 @@ def load_peft_model(adapter_model_name, **model_kwargs):
 
         try:
             tokenizer = AutoTokenizer.from_pretrained(adapter_model_name)
-        except ValueError as e:
+        except (OSError, ValueError) as e:
             # sometimes peft models will not define a tokenizer
             logger.exception(f"Failed to load tokenizer for {adapter_model_name}: e:`{e}`. Fallback to base model tokenizer.")
             tokenizer = AutoTokenizer.from_pretrained(base_model_name)

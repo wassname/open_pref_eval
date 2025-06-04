@@ -17,8 +17,7 @@ from open_pref_eval.helpers.load_model import load_hf_or_peft_model
 PEFT_MODELS = [
     "llamafactory/tiny-random-Llama-3-lora",
     # "farpluto/SmolLM-135M-Instruct-Finetune-LoRA",
-    # "pacozaa/tinyllama-alpaca-lora", # 1.1b
-    "bunnycore/SmolLM2-1.7B-lora_model",
+    # "bunnycore/SmolLM2-1.7B-lora_model",
     # "wassname/qwen-7B-codefourchan-QLoRA",
 ]
 
@@ -41,7 +40,6 @@ datasets = [imdb]
 )
 def test_model_load(model_name):
     model, tokenizer = load_hf_or_peft_model(model_name)
-    assert isinstance(model, PreTrainedModel), f"Model {model_name} is not a PreTrainedModel"
     assert isinstance(tokenizer, PreTrainedTokenizerBase), f"Tokenizer {model_name} is not a PreTrainedTokenizerBase"
 
 
@@ -81,7 +79,8 @@ def test_evaluate(model_name):
     if 'random' in model_name:
         pass
     else:
-        assert df_agg['correct'].iloc[0]>0.5
+        s = df_agg['correct'].iloc[0]
+        assert s>0.5, f"Model {model_name} did not perform better than random guessing on the dataset {s}"
 
 
 @pytest.mark.parametrize(

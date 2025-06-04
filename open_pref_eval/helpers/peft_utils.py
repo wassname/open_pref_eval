@@ -95,7 +95,7 @@ def is_peft_model_name(model_name):
     try:
         peft_config = PeftConfig.from_pretrained(model_name)
     except ValueError as e:
-        logger.exception(f"Failed to load PeftConfig for {model_name}: {e}")
+        # logger.exception(f"Failed to load PeftConfig for {model_name}: {e}")
         return False
     else:
         return True

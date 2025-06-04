@@ -40,7 +40,7 @@ def extract_logps(
     Returns:
         Dict containing computed scores, probabilities, and debug metrics
     """
-    batch_size = batch["chosen_input_ids"].shape[0]
+    batch_size = batch["chosen_ids"].shape[0]
     batch_indices = batch_size * step + torch.arange(batch_size)
     
     model.eval()
@@ -48,7 +48,7 @@ def extract_logps(
     # Run forward pass through concatenated model
     with torch.no_grad():
         forward_output = concatenated_forward(model, batch)
-    np_mask = 1-batch["prompt_attention_mask"].float()
+    np_mask = 1-batch["prompt_mask"].float()
     nst_mask = 1 - batch["chosen_special_tokens_mask"].float()
 
     # Extract model outputs and convert to float for numerical stability
@@ -114,8 +114,8 @@ def extract_logps(
         _chosen_ppl=chosen_ppl,
         _rejected_ppl=rejected_ppl,
         # Debug: completion length, for checking if the model is biased
-        _l_chosen=(batch["chosen_input_ids"] > 0).sum(-1),
-        _l_rejected=(batch["rejected_input_ids"] > 0).sum(-1),
+        _l_chosen=(batch["chosen_ids"] > 0).sum(-1),
+        _l_rejected=(batch["rejected_ids"] > 0).sum(-1),
     )
     
     if include_raw:
@@ -187,7 +187,7 @@ def eval_dataset(
     
     # Setup data collator and loader
     eval_dataloader = DataLoader(
-        tokenized_datasets,
+        tokenized_datasets.with_format("torch"),
         batch_size=batch_size,
         num_workers=num_workers,
         shuffle=False,
