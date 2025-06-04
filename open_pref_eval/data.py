@@ -93,7 +93,6 @@ class PreTokenizer:
                 batch["prompt"],
                 add_special_tokens=False,
                 padding=False,
-                truncation=True,
             )["input_ids"]
             out["prompt_ids"] = prompt
 
@@ -105,9 +104,8 @@ class PreTokenizer:
                 ans = self.tokenizer.encode_plus(
                     batch[key],
                     add_special_tokens=False,
-                    truncation=True,
                 )["input_ids"]
-                out[key + "_ids"] = ans["input_ids"]
+                out[key + "_ids"] = ans
 
         # Truncation: Now we know the lengths of prompt and completions
         max_completion_length = max(
@@ -137,14 +135,14 @@ class PreTokenizer:
         # Now join and pad, store prompt mask and attention mask
         out["prompt_mask"] = [1] * len(prompt) + [0] * (self.max_length - len(prompt))
         for key in ["chosen", "rejected"]:
-            ids = prompt + ans
+            ids = prompt + out[key + "_ids"]
 
             special_tokens_mask = self.tokenizer.get_special_tokens_mask(ids, already_has_special_tokens=True)
 
             # pad and attention mask
             encoded_inputs = self.tokenizer.pad(
                 {
-                    "input_ids": [ids],
+                    "input_ids": ids,
                     "special_tokens_mask": special_tokens_mask,
                 },
                 max_length=self.max_length,
