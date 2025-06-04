@@ -4,10 +4,9 @@
 
 ## Why open_pref_eval?
 
-**Judge-free evaluation.** Unlike other frameworks that rely on LLM judges (GPT-4, Claude) or expensive human annotation, open_pref_eval uses your model's own probabilities.
-
-✅ **No judge bias** - Direct probability measurement vs LLM judge preferences  
-✅ **Cost-effective** - Single forward pass vs expensive judge API calls  
+✅ **Judge-free evaluation.** Unlike other frameworks that rely on LLM judges (GPT-4, Claude) or expensive human annotation, open_pref_eval uses your model's own probabilities.
+✅ **No judge bias** - Preference pairs avoid the need to acount for [positional and self bias](https://verdict.haizelabs.com/docs/motivation/) in judges
+✅ **Cost-effective** - Double forward pass vs expensive judge API calls  
 ✅ **Reproducible** - Deterministic probabilities vs variable judge responses  
 ✅ **Actually hackable** - Pure PyTorch + HuggingFace, ~2000 lines vs complex frameworks
 
@@ -15,7 +14,6 @@
 - HuggingFace Transformers models only (extensible)
 - Local inference only (extensible for API models)
 - Preference datasets only (prompt, chosen, rejected format)
-- Results not directly comparable to judge-based frameworks
 
 ## How is this different?
 
@@ -106,7 +104,7 @@ See detailed examples: [`examples/example_multiple_models.ipynb`](./examples/exa
 
 | Feature | open_pref_eval | Judge-based frameworks |
 |---------|----------------|------------------------|
-| Cost per evaluation | 💚 Single inference | 🟡 Model + judge calls |
+| Cost per evaluation | 💚 Double inference | 🟡 Model + judge calls |
 | Evaluation bias | 💚 Model's own probs | 🟡 Judge preferences |
 | Reproducibility | 💚 Deterministic | 🟡 Variable |
 | Setup complexity | 💚 Load model + run | 🟡 Multi-step pipelines |
