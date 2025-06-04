@@ -188,7 +188,7 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
     )
     
     # Process in batches to avoid OOM
-    logger.info(f"Tokenizing dataset with {len(dataset)} examples in batches of {batch_size}")
+    logger.debug(f"Tokenizing dataset with in batches of {batch_size}")
     tokenized_ds = dataset.map(
         pre_tokenizer,
         batched=False,
@@ -225,11 +225,12 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
     if verbose > 1:
         # QC sample decode when verbose
         row = ds_qc[0]
-        logger.info("=== Sample QC after tokenization ===")
-        logger.info(tokenizer.decode(row['chosen_ids']))
-        logger.info("---")
-        logger.info(tokenizer.decode(row['rejected_ids']))
-        logger.info("=== End QC sample ===")
+        s = "=== Sample QC after tokenization ==="
+        s += "\n" + f"Chosen: {tokenizer.decode(row['chosen_ids'])}"
+        s += "\n---"
+        s += "\n" + f"Rejected: {tokenizer.decode(row['rejected_ids'])}"
+        s += "\n=== End QC sample ==="
+        logger.info(s)
     
     return tokenized_ds
 

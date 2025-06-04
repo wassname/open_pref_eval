@@ -48,8 +48,8 @@ def extract_logps(
     # Run forward pass through concatenated model
     with torch.no_grad():
         forward_output = concatenated_forward(model, batch)
-    np_mask = 1-batch["prompt_mask"].float()
-    nst_mask = 1 - batch["chosen_special_tokens_mask"].float()
+    np_mask = 1-forward_output["prompt_mask"].float()
+    nst_mask = 1 - forward_output["chosen_special_tokens_mask"].float()
 
     # Extract model outputs and convert to float for numerical stability
     chosen_t_logps = forward_output["chosen_logps"].float()

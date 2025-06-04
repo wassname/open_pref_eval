@@ -77,7 +77,7 @@ def concatenated_forward(
 
         output.update({
             f"{key}_logits": logits,
-            f"{key}_logprobs": per_token_logprobs,
+            f"{key}_logps": per_token_logprobs,
             f"{key}_mask": loss_mask_shifted,
             f"{key}_ids": input_ids,
             f"{key}_attention_mask": attention_mask,
