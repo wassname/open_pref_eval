@@ -4,47 +4,17 @@
 
 ## Why open_pref_eval?
 
-✅ **Judge-free evaluation.** Unlike other frameworks that rely on LLM judges (GPT-4, Claude) or expensive human annotation, open_pref_eval uses your model's own probabilities.
-✅ **No judge bias** - Preference pairs avoid the need to acount for [positional and self bias](https://verdict.haizelabs.com/docs/motivation/) in judges
-✅ **Cost-effective** - Double forward pass vs expensive judge API calls  
-✅ **Reproducible** - Deterministic probabilities vs variable judge responses  
-✅ **Actually hackable** - Pure PyTorch + HuggingFace, ~2000 lines vs complex frameworks
+- ✅ **Judge-free evaluation.** Unlike other frameworks that rely on LLM judges (GPT-4, Claude) or expensive human annotation, open_pref_eval uses your model's own probabilities.
+- ✅ **No judge bias** - Preference pairs avoid the need to acount for [positional and self bias](https://verdict.haizelabs.com/docs/motivation/) in judges
+- ✅ **Cost-effective** - Double forward pass vs expensive judge API calls  
+- ✅ **Reproducible** - Deterministic probabilities vs variable judge responses  
+- ✅ **Actually hackable** - Pure PyTorch + HuggingFace, ~2000 lines vs complex frameworks
 
 **Limitations:**
 - HuggingFace Transformers models only (extensible)
 - Local inference only (extensible for API models)
 - Preference datasets only (prompt, chosen, rejected format)
 
-## How is this different?
-
-| **Approach** | **Judge-based frameworks** | **open_pref_eval** |
-|--------------|---------------------------|-------------------|
-| **Method** | Require 3+ verdicts from frontier LLM judges (GPT-4, Claude, etc.) | Direct probability modeling |
-| **Cost** | $$ per judge evaluation | $ one-time inference |
-| **Bias** | Judge model preferences | Model's own probabilities |
-| **Reproducibility** | Variable (judge inconsistency) | Can be deterministic |
-| **Setup** | Complex judge pipelines | Simple: load model + evaluate |
-| **data** | Need a larger number of rows to  overcome sample and judge variability | <300 rows can reliabily seperate models |
-
-## How It Works
-
-Instead of asking a judge "which is better?", we ask your model "which would you say?":
-
-```py
-# Given preference data:
-prompt = "Write a helpful response:"
-chosen = "I'd be happy to help you with that."
-rejected = "I can't assist with anything."
-
-# We measure which completion your model finds more probable:
-lp_chosen = model("I'd be happy...").logits.log_softmax(-1).mean()    # -0.31
-lp_rejected = model("I can't assist...").logits.log_softmax(-1).mean() # -1.56
-
-# Higher log probability = model prefers it
-accuracy = lp_chosen > lp_rejected  # True = model aligned
-```
-
-This works because models assign higher probability to completions they prefer. We can directly compare log probabilities without needing a separate judge model.
 
 ## 🚀 Quickstart
 
@@ -83,17 +53,27 @@ print(results)  # Shows accuracy per dataset
 
 **That's it!** No judge setup, no expensive API calls.
 
+See more examples in [./examples](./examples)
 
-**Compare multiple models:**
-```python
-from open_pref_eval import evaluate
+## How It Works
 
-# Compare several models at once
-results = evaluate(
-    model_names=["microsoft/Phi-4-mini-instruct", "Qwen/Qwen3-4B"],
-    datasets=["unalignment/toxic-dpo-v0.2"]
-)
+Instead of asking a judge "which is better?", we ask your model "which would you say?":
+
+```py
+# Given preference data:
+prompt = "Write a helpful response:"
+chosen = "I'd be happy to help you with that."
+rejected = "I can't assist with anything."
+
+# We measure which completion your model finds more probable:
+lp_chosen = model("I'd be happy...").logits.log_softmax(-1).mean()    # -0.31
+lp_rejected = model("I can't assist...").logits.log_softmax(-1).mean() # -1.56
+
+# Higher log probability = model prefers it
+accuracy = lp_chosen > lp_rejected  # True = model aligned
 ```
+
+This works because models assign higher probability to completions they prefer. We can directly compare log probabilities without needing a separate judge model.
 
 ## 💡 Use Cases
 
@@ -114,25 +94,6 @@ See detailed examples: [`examples/example_multiple_models.ipynb`](./examples/exa
 | Setup complexity | 💚 Simple load model + run | 🟡 Multi-step pipelines |
 | Offline capability | 💚 Fully local, or api | 🟡 Often needs APIs |
 
-## 📊 Available Datasets
-
-Built-in datasets covering key safety and capability areas:
-- **Safety**: `toxic-dpo-v0.2` (toxicity), `ethics_*` (moral reasoning)  
-- **Truthfulness**: `truthful_qa_preferences` (factual accuracy)
-- **Helpfulness**: `imdb_preferences` (sentiment), `mmlu_*` (knowledge)
-
-## Technical Details
-
-**Token-level scoring**: We tokenize both completions and compute log probabilities for each token:
-```python
-# For each token in the completion:
-chosen_logprobs = model.logprobs("I'd be happy to help")    # [-0.1, -0.3, -0.2, ...]
-rejected_logprobs = model.logprobs("I can't assist")       # [-0.8, -1.2, -0.9, ...]
-
-# Average across tokens (IPO-style):
-score = mean(chosen_logprobs) - mean(rejected_logprobs)
-accuracy = score > 0  # chosen was more probable
-```
 
 ## Why Preference Datasets?
 
@@ -141,7 +102,17 @@ accuracy = score > 0  # chosen was more probable
 3. **Efficient** - single forward pass, no sampling needed
 4. **Interpretable** - see exactly which tokens drive the preference
 
-## FAQ
+
+## 📊 Available Datasets
+
+Built-in datasets covering key safety and capability areas:
+- **Safety**: `toxic-dpo-v0.2` (toxicity), `ethics_*` (moral reasoning)  
+- **Truthfulness**: `truthful_qa_preferences` (factual accuracy)
+- **Helpfulness**: `imdb_preferences` (sentiment), `mmlu_*` (knowledge)
+
+
+
+## Appendix: FAQ
 
 **Q: How does this compare to other evaluation frameworks?**  
 A: Most frameworks use LLM judges or human annotation. We use direct probability measurement:
@@ -162,14 +133,20 @@ A: Yes! Any dataset with `prompt`, `chosen`, `rejected` columns works. See `exam
 **Q: Why did you score probabilities this way?**
 There are bunch of ways to score the probabilities models assign to chosen and rejected tokens. I've extensively tried many of them (DPO, IPO, mean, entropy, calibrated, etc) but very few beat IPO which is mean(probs) and which can also be thought of as perplixity.
 
-## 📚 Documentation
 
-| Section | Description |
-|---------|-------------|
-| [Examples](./examples/) | Jupyter notebooks with detailed usage |
-| [Technical Details](#technical-details) | Scoring methods and implementation |
-| [Available Datasets](#-available-datasets) | Built-in preference datasets |
-| [FAQ](#faq) | Common questions and comparisons |
+## Appendix: Technical Details
+
+**Token-level scoring**: We tokenize both completions and compute log probabilities for each token:
+```python
+# For each token in the completion:
+chosen_logprobs = model.logprobs("I'd be happy to help")    # [-0.1, -0.3, -0.2, ...]
+rejected_logprobs = model.logprobs("I can't assist")       # [-0.8, -1.2, -0.9, ...]
+
+# Average across tokens (IPO-style):
+score = mean(chosen_logprobs) - mean(rejected_logprobs)
+accuracy = score > 0  # chosen was more probable
+
+```
 
 ## Appendix: Other framrworks
 
