@@ -19,17 +19,18 @@
 
 | **Approach** | **Judge-based frameworks** | **open_pref_eval** |
 |--------------|---------------------------|-------------------|
-| **Method** | LLM judges (GPT-4, Claude, etc.) | Direct probability modeling |
+| **Method** | Require 3+ verdicts from frontier LLM judges (GPT-4, Claude, etc.) | Direct probability modeling |
 | **Cost** | $$ per judge evaluation | $ one-time inference |
 | **Bias** | Judge model preferences | Model's own probabilities |
-| **Reproducibility** | Variable (judge inconsistency) | Deterministic |
+| **Reproducibility** | Variable (judge inconsistency) | Can be deterministic |
 | **Setup** | Complex judge pipelines | Simple: load model + evaluate |
+| **data** | Need a larger number of rows to  overcome sample and judge variability | <300 rows can reliabily seperate models |
 
 ## How It Works
 
 Instead of asking a judge "which is better?", we ask your model "which would you say?":
 
-```python
+```py
 # Given preference data:
 prompt = "Write a helpful response:"
 chosen = "I'd be happy to help you with that."
@@ -61,24 +62,27 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 model = AutoModelForCausalLM.from_pretrained("your-model")
 tokenizer = AutoTokenizer.from_pretrained("your-model")
 
+
+
 # Evaluate on multiple datasets
 results, raw_data = evaluate_model(
     model=model, 
-    tokenizer=tokenizer, 
+    tokenizer=tokenizer,
+    # Choose (or transform) datasets that are in prompt, chosen, rejected format
     datasets=["unalignment/toxic-dpo-v0.2", "wassname/truthful_qa_preferences"]
 )
 
 print(results)  # Shows accuracy per dataset
 ```
-
-**That's it!** No judge setup, no expensive API calls.
-
 **Output:**
 
 | dataset           | correct | prob  | n   | model     |
 |:------------------|--------:|------:|----:|:----------|
 | toxic-dpo-v0.2    |    0.85 | 0.73  | 300 | your-model|
 | truthful_qa       |    0.61 | 0.56  | 300 | your-model|
+
+**That's it!** No judge setup, no expensive API calls.
+
 
 **Compare multiple models:**
 ```python
@@ -104,11 +108,11 @@ See detailed examples: [`examples/example_multiple_models.ipynb`](./examples/exa
 
 | Feature | open_pref_eval | Judge-based frameworks |
 |---------|----------------|------------------------|
-| Cost per evaluation | 💚 Double inference | 🟡 Model + judge calls |
+| Cost per evaluation | 💚 2x inference | 🟡 3+ Model + 3x large judge calls |
 | Evaluation bias | 💚 Model's own probs | 🟡 Judge preferences |
 | Reproducibility | 💚 Deterministic | 🟡 Variable |
-| Setup complexity | 💚 Load model + run | 🟡 Multi-step pipelines |
-| Offline capability | 💚 Fully local | 🟡 Often needs APIs |
+| Setup complexity | 💚 Simple load model + run | 🟡 Multi-step pipelines |
+| Offline capability | 💚 Fully local, or api | 🟡 Often needs APIs |
 
 ## 📊 Available Datasets
 
@@ -129,8 +133,6 @@ rejected_logprobs = model.logprobs("I can't assist")       # [-0.8, -1.2, -0.9, 
 score = mean(chosen_logprobs) - mean(rejected_logprobs)
 accuracy = score > 0  # chosen was more probable
 ```
-
-**Multiple scoring methods available**: IPO-style (mean), DPO-style (sum), first-diverging token, rank-based, and more in `open_pref_eval.scoring`.
 
 ## Why Preference Datasets?
 
@@ -156,6 +158,10 @@ A: Still works! Any model assigns probabilities to text. Well-aligned models ten
 **Q: Can I add custom datasets?**  
 A: Yes! Any dataset with `prompt`, `chosen`, `rejected` columns works. See `examples/` for dataset creation.
 
+
+**Q: Why did you score probabilities this way?**
+There are bunch of ways to score the probabilities models assign to chosen and rejected tokens. I've extensively tried many of them (DPO, IPO, mean, entropy, calibrated, etc) but very few beat IPO which is mean(probs) and which can also be thought of as perplixity.
+
 ## 📚 Documentation
 
 | Section | Description |
@@ -165,11 +171,19 @@ A: Yes! Any dataset with `prompt`, `chosen`, `rejected` columns works. See `exam
 | [Available Datasets](#-available-datasets) | Built-in preference datasets |
 | [FAQ](#faq) | Common questions and comparisons |
 
-## Appendix: Framework Comparison
+## Appendix: Other framrworks
 
-| Feature | open_pref_eval | [LM-Eval-Harness](https://github.com/EleutherAI/lm-evaluation-harness) | [LightEval](https://github.com/huggingface/lighteval) | [Prometheus](https://github.com/prometheus-eval/prometheus-eval) | [Verdict](https://github.com/haizelabs/verdict) | [HELM](https://github.com/stanford-crfm/helm) |
-|---------|----------------|-----------------|-----------|------------|---------|------|
-| **Judge Required** | ❌ | ❌ | Optional | ✅ (own models) | ✅ | Optional |
+- probs over preference pairs
+    - [open_pref_eval](https://github.com/wassname/open_pref_eval/edit/main/README.md) - this one
+    - [reward-bench](https://github.com/allenai/reward-bench)
+- open ended answers + judges
+    - [Verdict](https://github.com/haizelabs/verdict) - the best judge library
+    - [Prometheus](https://github.com/prometheus-eval/prometheus-eval)
+    - [opencompass](https://github.com/open-compass/opencompass)
+- classification accuracy
+    - [LM-Eval-Harness](https://github.com/EleutherAI/lm-evaluation-harness)
+    - [LightEval](https://github.com/huggingface/lighteval)
+    - [HELM](https://github.com/stanford-crfm/helm) 
 
 
 
