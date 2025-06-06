@@ -88,24 +88,21 @@ class PreTokenizer:
         batch['rejected'] = apply_chat_template_to_completion(self.tokenizer, batch["prompt"], batch["rejected"])[1]
 
         # Encode prompt with left truncation
-        with set_tokenizer_options(self.tokenizer, truncation_side="left"):
-            prompt = self.tokenizer.encode_plus(
-                batch["prompt"],
-                add_special_tokens=False,
-                padding=False,
-            )["input_ids"]
-            out["prompt_ids"] = prompt
-
+        prompt = self.tokenizer.encode_plus(
+            batch["prompt"],
+            add_special_tokens=False,
+            padding=False,
+        )["input_ids"]
+        out["prompt_ids"] = prompt
 
         # Tokenize completions
-        with set_tokenizer_options(self.tokenizer, padding_side="right", truncation_side="right"):
-            for key in ["chosen", "rejected"]:
-                # Tokenize completion
-                ans = self.tokenizer.encode_plus(
-                    batch[key],
-                    add_special_tokens=False,
-                )["input_ids"]
-                out[key + "_ids"] = ans
+        for key in ["chosen", "rejected"]:
+            # Tokenize completion
+            ans = self.tokenizer.encode_plus(
+                batch[key],
+                add_special_tokens=False,
+            )["input_ids"]
+            out[key + "_ids"] = ans
 
         # Truncation: Now we know the lengths of prompt and completions
         max_completion_length = max(
@@ -122,8 +119,9 @@ class PreTokenizer:
                 out["prompt_truncated"] = prompt_length - self.max_prompt_length
                 prompt = prompt[-self.max_prompt_length:]
                 prompt_length = self.max_prompt_length
+            
             # then truncate completions to fit
-            if max_completion_length + prompt_length > self.max_length:
+            if (max_completion_length + prompt_length) > self.max_length:
                 max_ans_length = self.max_length - prompt_length
                 if len(out["chosen_ids"]) > max_ans_length:
                     out["chosen_truncated"] = len(out["chosen_ids"]) - max_ans_length
@@ -134,25 +132,26 @@ class PreTokenizer:
 
         # Now join and pad, store prompt mask and attention mask
         out["prompt_mask"] = [1] * len(prompt) + [0] * (self.max_length - len(prompt))
-        for key in ["chosen", "rejected"]:
-            ids = prompt + out[key + "_ids"]
+        with set_tokenizer_options(self.tokenizer, padding_side="right", truncation_side="right"):
+            for key in ["chosen", "rejected"]:
+                ids = prompt + out[key + "_ids"]
 
-            special_tokens_mask = self.tokenizer.get_special_tokens_mask(ids, already_has_special_tokens=True)
+                special_tokens_mask = self.tokenizer.get_special_tokens_mask(ids, already_has_special_tokens=True)
 
-            # pad and attention mask
-            encoded_inputs = self.tokenizer.pad(
-                {
-                    "input_ids": ids,
-                    "special_tokens_mask": special_tokens_mask,
-                },
-                max_length=self.max_length,
-                padding="max_length",
-                return_attention_mask=True,
-            )
+                # pad and attention mask
+                encoded_inputs = self.tokenizer.pad(
+                    {
+                        "input_ids": ids,
+                        "special_tokens_mask": special_tokens_mask,
+                    },
+                    max_length=self.max_length,
+                    padding="max_length",
+                    return_attention_mask=True,
+                )
 
-            out[key + "_ids"] = encoded_inputs["input_ids"]
-            out[key + "_mask"] = encoded_inputs["attention_mask"]
-            out[key + "_special_tokens_mask"] = encoded_inputs["special_tokens_mask"]
+                out[key + "_ids"] = encoded_inputs["input_ids"]
+                out[key + "_mask"] = encoded_inputs["attention_mask"]
+                out[key + "_special_tokens_mask"] = encoded_inputs["special_tokens_mask"]
 
         return out
 
