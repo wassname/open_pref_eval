@@ -10,9 +10,12 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
 )
+from transformers import pipeline
+import torch
 # from open_pref_eval.trainer import dummy_dataset, OPEConfig, OPETrainer
 from open_pref_eval.evaluation import evaluate, evaluate_model
 from open_pref_eval.helpers.load_model import load_hf_or_peft_model
+from open_peft_eval.helpers.peft_utils import set_adapter
 
 PEFT_MODELS = [
     "llamafactory/tiny-random-Llama-3-lora",
@@ -63,6 +66,23 @@ def test_evaluate_peft_model( model_name):
     print('df_raw', df_raw.groupby(["model", "dataset"], dropna=False)[numeric_cols].mean())
     print(df)
     assert df['correct'].iloc[0]>0.5
+
+
+    # unit test that adapter is diff than the base model
+    generator = pipeline("text-generation", model=model, tokenizer=tokenizer,  device_map='auto', torch_dtype='auto')
+    all_scores = []
+    for adapter in [None]+ list(model.peft_config.keys()):
+        with set_adapter(model, adapter):
+            print(f"Using adapter: {adapter}")
+            output = generator([{"role": "user", "content": 'ping'}],  do_sample=False, max_new_tokens=1, return_full_text=False, output_scores=True, return_dict_in_generate=True, return_tensors=True)[0]
+            scores = torch.tensor(output['scores'])
+            all_scores.append(scores)
+            print(f"Output: {output['generated_text']}")
+            print(scores)
+            
+    d = torch.stack(all_scores).diff(dim=0).abs().sum()
+    assert d > 0, f"Adapter {adapter} is not different from the base model. Difference: {d}"
+
 
 
 @pytest.mark.parametrize(
