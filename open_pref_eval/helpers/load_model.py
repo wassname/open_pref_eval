@@ -5,7 +5,7 @@ from loguru import logger
 import torch
 from transformers import AutoTokenizer, BitsAndBytesConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
+from pathlib import Path
 from .peft_utils import is_peft_model_name
 
 if is_peft_available():
@@ -22,15 +22,10 @@ def load_peft_model(adapter_model_name, **model_kwargs):
         )
 
         # Note PEFT models can be loaded through PEFT of Transformers, and they have frustratingly similar but different APIs. Best to use PEFT itself.
-        model = get_peft_model(model, peft_config)
+        adapter_name = Path(adapter_model_name).name
+        model = get_peft_model(model, peft_config, adapter_name=adapter_name)
         tokenizer = AutoTokenizer.from_pretrained(base_model_name)
 
-        # try:
-        #     tokenizer = AutoTokenizer.from_pretrained(adapter_model_name)
-        # except Exception as e:
-        #     # sometimes peft models will not define a tokenizer
-        #     logger.error(f"Failed to load tokenizer for {adapter_model_name}: e:`{e}`. Fallback to base model tokenizer.")
-        #     tokenizer = AutoTokenizer.from_pretrained(base_model_name)
     else:
         raise ValueError(f"Model {adapter_model_name} is not a PEFT model.")
     return model, tokenizer
