@@ -222,6 +222,9 @@ def tokenize_dataset(dataset, tokenizer: PreTrainedTokenizerBase,
         logger.info(f"Truncation rates - Prompt: {prompt_trunc:.2%}, "
                     f"Chosen: {chosen_trunc:.2%}, Rejected: {rejected_trunc:.2%}")
     if verbose > 1:
+        # TODO consider making padding token shorted e.g. 10*<pad>
+        # def shorten_pad(s):
+        #     pad = tokenizer.pad_token or "<pad>"
         # QC sample decode when verbose
         row = ds_qc[0]
         s = "=== Sample QC after tokenization ==="
