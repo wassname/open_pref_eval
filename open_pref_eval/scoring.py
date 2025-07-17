@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
 import torch.nn.functional as F
+from jaxtyping import Float
 
 EPS = 1e-8
 
@@ -8,7 +9,7 @@ EPS = 1e-8
 # Core Utility Functions
 # ============================================================================
 
-def build_output_dict(chosen_log_score: Tensor, rejected_log_score: Tensor) -> dict:
+def build_output_dict(chosen_log_score: Float[Tensor, "batch seq_len"], rejected_log_score: Float[Tensor, "batch seq_len"]) -> dict:
     """Build standardized output dictionary from log scores."""
     log_ratio = chosen_log_score - rejected_log_score
     return {
@@ -49,7 +50,7 @@ def safe_exp(log_values: Tensor, cap: float = -1) -> Tensor:
 # Basic Scoring Functions
 # ============================================================================
 
-def score_log_prob_sum(
+def score_dpo(
     log_prob_chosen: Tensor, 
     log_prob_rejected: Tensor, 
     mask_chosen: Tensor, 
@@ -63,7 +64,7 @@ def score_log_prob_sum(
     
     return build_output_dict(chosen_score, rejected_score)
 
-def score_log_prob_mean(
+def score_ipo(
     log_prob_chosen: Tensor, 
     log_prob_rejected: Tensor, 
     mask_chosen: Tensor, 
@@ -76,293 +77,23 @@ def score_log_prob_mean(
     
     return build_output_dict(chosen_score, rejected_score)
 
-def score_first_diverging_token(
+def score_uln(
     log_prob_chosen: Tensor, 
     log_prob_rejected: Tensor, 
     mask_chosen: Tensor, 
     mask_rejected: Tensor, 
+    log_prob_chosen_norm: Tensor,
+    log_prob_rejected_norm: Tensor,
     **kwargs
 ) -> dict:
-    """Score using first non-zero (diverging) token log probability."""
-    chosen_score = first_nonzero_index(log_prob_chosen * mask_chosen)
-    rejected_score = first_nonzero_index(log_prob_rejected * mask_rejected)
-    
+    """
+    Score using unconditional likelihood normalized (ULN).
+
+    Unconditional likelihood normalized selects the option with the highest average token logprob once normalized by the unconditional token logprobs, as described in this EleutherAI blogpost. This method incurs an additional LLM call to obtain the unconditional likelihoods.
+
+    https://blog.eleuther.ai/multiple-choice-normalization/
+    """
+    chosen_score = (log_prob_chosen_norm * mask_chosen).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)
+    rejected_score = (log_prob_rejected_norm * mask_rejected).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)
+
     return build_output_dict(chosen_score, rejected_score)
-
-def score_position_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    decay: float = 0.9,
-    **kwargs
-) -> dict:
-    """Score with exponential position decay (earlier tokens matter more)."""
-    seq_len = log_prob_chosen.shape[1]
-    decay_weights = torch.pow(decay, torch.arange(seq_len, device=log_prob_chosen.device)).unsqueeze(0)
-    
-    chosen_score = (log_prob_chosen * mask_chosen * decay_weights).sum(-1) / (mask_chosen * decay_weights).sum(-1).clamp(min=EPS)
-    rejected_score = (log_prob_rejected * mask_rejected * decay_weights).sum(-1) / (mask_rejected * decay_weights).sum(-1).clamp(min=EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-def score_cumulative_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    **kwargs
-) -> dict:
-    """Score weighted by cumulative log probability."""
-    cumsum_chosen = (log_prob_chosen * mask_chosen).cumsum(-1)
-    cumsum_rejected = (log_prob_rejected * mask_rejected).cumsum(-1)
-    
-    chosen_score = (cumsum_chosen * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
-    rejected_score = (cumsum_rejected * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-# ============================================================================
-# Statistical Scoring Functions
-# ============================================================================
-
-def score_percentile(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    percentile: float = 75,
-    **kwargs
-) -> dict:
-    """Score using percentile of log probabilities."""
-    # Replace masked tokens with NaN for proper percentile calculation
-    log_prob_chosen_masked = log_prob_chosen.clone()
-    log_prob_rejected_masked = log_prob_rejected.clone()
-    
-    log_prob_chosen_masked[~mask_chosen.bool()] = float('nan')
-    log_prob_rejected_masked[~mask_rejected.bool()] = float('nan')
-    
-    chosen_score = torch.nanquantile(log_prob_chosen_masked.float(), percentile/100., dim=1)
-    if torch.isnan(chosen_score).any():
-        chosen_score = torch.nan_to_num(chosen_score, nan=0.0)
-    rejected_score = torch.nanquantile(log_prob_rejected_masked.float(), percentile/100., dim=1)
-    if torch.isnan(rejected_score).any():
-        rejected_score = torch.nan_to_num(rejected_score, nan=0.0)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-def score_power_mean(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    power: float = 0.5,
-    **kwargs
-) -> dict:
-    """Score using power mean of probabilities (p=0: geometric, p=1: arithmetic)."""
-    prob_chosen = torch.exp(log_prob_chosen) * mask_chosen
-    prob_rejected = torch.exp(log_prob_rejected) * mask_rejected
-    
-    chosen_score = (prob_chosen.pow(power).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)).pow(1/power)
-    rejected_score = (prob_rejected.pow(power).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)).pow(1/power)
-    
-    return build_output_dict(chosen_score.log(), rejected_score.log())
-
-def score_entropy_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    **kwargs
-) -> dict:
-    """Score using sequence entropy."""
-    prob_chosen = torch.exp(log_prob_chosen) * mask_chosen + EPS
-    prob_rejected = torch.exp(log_prob_rejected) * mask_rejected + EPS
-    
-    # Normalize to valid probability distributions
-    prob_chosen = prob_chosen / prob_chosen.sum(-1, keepdim=True)
-    prob_rejected = prob_rejected / prob_rejected.sum(-1, keepdim=True)
-    
-    entropy_chosen = -(prob_chosen * torch.log(prob_chosen + EPS)).sum(-1)
-    entropy_rejected = -(prob_rejected * torch.log(prob_rejected + EPS)).sum(-1)
-    
-    return build_output_dict(entropy_chosen, entropy_rejected)
-
-def score_confidence_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    **kwargs
-) -> dict:
-    """Score weighted by token confidence (high probability tokens get more weight)."""
-    prob_chosen = torch.exp(log_prob_chosen) * mask_chosen
-    prob_rejected = torch.exp(log_prob_rejected) * mask_rejected
-    
-    chosen_score = (log_prob_chosen * prob_chosen).sum(-1) / prob_chosen.sum(-1).clamp(min=EPS)
-    rejected_score = (log_prob_rejected * prob_rejected).sum(-1) / prob_rejected.sum(-1).clamp(min=EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-# ============================================================================
-# Uncertainty-Aware Scoring Functions  
-# ============================================================================
-
-def score_with_vocab_uncertainty(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    vocab_concentration_chosen: Tensor,
-    vocab_concentration_rejected: Tensor,
-    alpha: float = 1.0,
-    **kwargs
-) -> dict:
-    """Score with uncertainty weighting (WPO-style)."""
-    # Adjust log probabilities by vocabulary concentration
-    log_prob_chosen_adj = log_prob_chosen - vocab_concentration_chosen * alpha
-    log_prob_rejected_adj = log_prob_rejected - vocab_concentration_rejected * alpha
-    
-    chosen_score = (log_prob_chosen_adj * mask_chosen).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)
-    rejected_score = (log_prob_rejected_adj * mask_rejected).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-def score_vocab_precision_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    vocab_concentration_chosen: Tensor,
-    vocab_concentration_rejected: Tensor,
-    **kwargs
-) -> dict:
-    """Score with precision weighting (uncertainty as variance)."""
-    # Higher concentration = higher uncertainty, so use inverse as precision
-    precision_chosen = torch.exp(-vocab_concentration_chosen) * mask_chosen
-    precision_rejected = torch.exp(-vocab_concentration_rejected) * mask_rejected
-    
-    chosen_score = (log_prob_chosen * precision_chosen).sum(-1) / (precision_chosen.sum(-1) + EPS)
-    rejected_score = (log_prob_rejected * precision_rejected).sum(-1) / (precision_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-def score_vocab_information_weighted(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    vocab_concentration_chosen: Tensor,
-    vocab_concentration_rejected: Tensor,
-    **kwargs
-) -> dict:
-    """Score weighted by token informativeness (inverse of concentration)."""
-    max_conc = max(vocab_concentration_chosen.max(), vocab_concentration_rejected.max())
-    
-    # Higher concentration = less informative
-    info_chosen = (max_conc - vocab_concentration_chosen) * mask_chosen
-    info_rejected = (max_conc - vocab_concentration_rejected) * mask_rejected
-    
-    # Normalize to get weights
-    info_weights_chosen = torch.softmax(info_chosen, dim=-1) * mask_chosen
-    info_weights_rejected = torch.softmax(info_rejected, dim=-1) * mask_rejected
-    
-    chosen_score = (log_prob_chosen * info_weights_chosen).sum(-1) / (info_weights_chosen.sum(-1) + EPS)
-    rejected_score = (log_prob_rejected * info_weights_rejected).sum(-1) / (info_weights_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-# ============================================================================
-# Divergence-Based Scoring Functions
-# ============================================================================
-
-def score_f_divergence(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    **kwargs
-) -> dict:
-    """Score using f-divergence (from TRL)."""
-    masked_log_prob_chosen = log_prob_chosen * mask_chosen
-    masked_log_prob_rejected = log_prob_rejected * mask_rejected
-    
-    logits_chosen = masked_log_prob_chosen - F.softplus(masked_log_prob_chosen)
-    logits_rejected = masked_log_prob_rejected - F.softplus(masked_log_prob_rejected)
-    
-    chosen_score = (logits_chosen * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
-    rejected_score = (logits_rejected * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
-    
-    return build_output_dict(chosen_score, rejected_score)
-
-def score_alpha_divergence(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    alpha: float = 0.5,
-    **kwargs
-) -> dict:
-    """Score using alpha-divergence."""
-    masked_log_prob_chosen = log_prob_chosen * mask_chosen
-    masked_log_prob_rejected = log_prob_rejected * mask_rejected
-    
-    chosen_exp = safe_exp(masked_log_prob_chosen * -alpha) / alpha
-    rejected_exp = safe_exp(masked_log_prob_rejected * -alpha) / alpha
-    
-    chosen_score = (chosen_exp * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
-    rejected_score = (rejected_exp * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
-
-    return build_output_dict(chosen_score.clamp(min=EPS).log(), rejected_score.clamp(min=EPS).log())
-
-# ============================================================================
-# Alternative Scoring Functions
-# ============================================================================
-
-def score_perplexity_ratio(
-    log_prob_chosen: Tensor, 
-    log_prob_rejected: Tensor, 
-    mask_chosen: Tensor, 
-    mask_rejected: Tensor, 
-    **kwargs
-) -> dict:
-    """Score using perplexity ratio (lower perplexity is better)."""
-    avg_log_prob_chosen = (log_prob_chosen * mask_chosen).sum(-1) / mask_chosen.sum(-1).clamp(min=EPS)
-    avg_log_prob_rejected = (log_prob_rejected * mask_rejected).sum(-1) / mask_rejected.sum(-1).clamp(min=EPS)
-    
-    # Convert to perplexity (lower is better)
-    perp_chosen = torch.exp(-avg_log_prob_chosen)
-    perp_rejected = torch.exp(-avg_log_prob_rejected)
-    
-    # Return inverted scores so lower perplexity = higher score
-    return build_output_dict(perp_rejected.log(), perp_chosen.log())
-
-# def score_rank_based(
-#     mask_chosen: Tensor, 
-#     mask_rejected: Tensor, 
-#     rank_chosen: Tensor,
-#     rank_rejected: Tensor,
-#     **kwargs
-# ) -> dict:
-#     """Score using token ranks instead of log probabilities."""
-#     # Convert ranks to log space and average
-#     chosen_score = -(torch.log(rank_chosen + EPS) * mask_chosen).sum(-1) / (mask_chosen.sum(-1) + EPS)
-#     rejected_score = -(torch.log(rank_rejected + EPS) * mask_rejected).sum(-1) / (mask_rejected.sum(-1) + EPS)
-    
-#     return build_output_dict(chosen_score, rejected_score)
-
-# ============================================================================
-# Legacy Function Aliases (for backward compatibility)
-# ============================================================================
-
-def score_preferences(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs):
-    """Legacy alias for score_log_prob_sum."""
-    return score_log_prob_sum(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs)
-
-def score_ipo(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs):
-    """Legacy alias for score_log_prob_mean."""
-    return score_log_prob_mean(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs)
-
-def score_1st_diverg(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs):
-    """Legacy alias for score_first_diverging_token."""
-    return score_first_diverging_token(log_prob_chosen, log_prob_rejected, mask_chosen, mask_rejected, **kwargs)

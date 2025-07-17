@@ -16,7 +16,7 @@ from transformers import (
 
 from .datasets import ds2name, get_default_datasets
 from .helpers.mem import clear_mem
-from .helpers.peft import is_peft_model, set_adapter
+from .helpers.peft_utils import is_peft_model, set_adapter
 from .scoring import score_ipo
 from .trainer import DataCollatorForPreference, concatenated_forward
 
@@ -54,10 +54,6 @@ def extract_logps(
     rejected_t_logps = forward_output["rejected_logps"].float()
     chosen_mask = forward_output["chosen_mask"].float()
     rejected_mask = forward_output["rejected_mask"].float()
-    logp_vocab_conc_c = forward_output["vocab_concentration_chosen"].float()
-    logp_vocab_conc_r = forward_output["vocab_concentration_rejected"].float()
-    # chosen_ranks = forward_output["chosen_ranks"].float()
-    # rejected_ranks = forward_output["rejected_ranks"].float()
 
     # Validate that we have valid completions
     if (chosen_mask.sum(1) == 0).any() or (rejected_mask.sum(1) == 0).any():
@@ -74,10 +70,11 @@ def extract_logps(
                 log_prob_rejected=rejected_t_logps,
                 mask_chosen=chosen_mask,
                 mask_rejected=rejected_mask,
-                vocab_concentration_chosen=logp_vocab_conc_c,
-                vocab_concentration_rejected=logp_vocab_conc_r,
-                # rank_chosen=chosen_ranks,
-                # rank_rejected=rejected_ranks,
+                log_prob_chosen_norm=forward_output["chosen_normalized_logps"],
+                log_prob_rejected_norm=forward_output["rejected_normalized_logps"],
+                logprobs_chosen_unconditional=forward_output["chosen_uncond_logps"],
+                logprobs_rejected_unconditional=forward_output["rejected_uncond_logps"],
+                
             )
             # Prefix score outputs with score name
             prefixed_scores = {f"score_{score_name}__{key}": value for key, value in score_results.items()}
@@ -100,10 +97,10 @@ def extract_logps(
             log_prob_rejected=rejected_t_logps,
             mask_chosen=chosen_mask,
             mask_rejected=rejected_mask,
-            vocab_concentration_chosen=logp_vocab_conc_c,
-            vocab_concentration_rejected=logp_vocab_conc_r,
-            # rank_chosen=chosen_ranks,
-            # rank_rejected=rejected_ranks,
+            log_prob_chosen_norm=forward_output["chosen_normalized_logps"],
+            log_prob_rejected_norm=forward_output["rejected_normalized_logps"],
+            logprobs_chosen_unconditional=forward_output["chosen_uncond_logps"],
+            logprobs_rejected_unconditional=forward_output["rejected_uncond_logps"],
         )
         prefixed_scores = {f"score__{key}": value for key, value in score_results.items()}
         outputs.update(prefixed_scores)

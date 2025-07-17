@@ -32,6 +32,9 @@ dev = [
   "parameterized>=0.9",
   "anycache>=2.4.0",
   "statsmodels>=0.14.4",
+  "seaborn>=0.13.2",
+  "plotly>=6.1.2",
+  "nbformat>=5.10.4",
 ]
 peft = [
   "peft>=0.15.2",

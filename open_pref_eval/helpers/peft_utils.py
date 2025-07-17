@@ -1,19 +1,27 @@
+"""
+see also
+- https://github.com/JD-P/minihf/blob/9e64b1ffb44c00ebab933301a80b902f422faba4/minihf_infer.py#L37
+"""
+
 from contextlib import contextmanager, nullcontext
 from transformers.utils import is_peft_available
 from transformers import PreTrainedModel
+from loguru import logger
+import torch
+from transformers import AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 if is_peft_available():
-    from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
+    from peft import AutoPeftModelForCausalLM, get_peft_model, PeftConfig, PeftModelForCausalLM
+    from peft import PeftModel, get_peft_model
 
 def is_peft_model(model):
     return is_hf_peft_model(model) or is_plain_peft_model(model)
-
 
 def is_plain_peft_model(model):
     if is_peft_available() and isinstance(model, PeftModel):
         return True
     return False
-
 
 def is_hf_peft_model(model):
     if is_peft_available() and hasattr(model, 'peft_config'):
@@ -54,7 +62,7 @@ def set_hf_adapter(model: PreTrainedModel, adapter_name: str = None):
             model.disable_adapters()
             yield model
     except Exception as e:
-        print(f"Error: {e}")
+        logger.exception(f"Error: {e}")
         raise e
     finally:
         if old_adapter_name is None:
@@ -74,10 +82,21 @@ def set_peft_adapter(model: PeftModel, adapter_name: str = None):
             with model.disable_adapter():
                 yield model
     except Exception as e:
-        print(f"Error: {e}")
+        logger.exception(f"Error: {e}")
         raise e
     finally:
         if old_adapter_name is None:
             model.disable_adapter()
         else:
             model.set_adapter(old_adapter_name)
+
+
+def is_peft_model_name(model_name):
+    try:
+        peft_config = PeftConfig.from_pretrained(model_name)
+    except ValueError as e:
+        # logger.exception(f"Failed to load PeftConfig for {model_name}: {e}")
+        return False
+    else:
+        return True
+

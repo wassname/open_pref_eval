@@ -11,7 +11,6 @@ from transformers.data.data_collator import DataCollatorMixin
 import warnings
 
 
-# FIXME, I should just pretok, so I can warn about cropping with stats
 @dataclass
 class DataCollatorForPreference(DataCollatorMixin):
     """Data collator for preference learning that handles prompt-completion pairs.
@@ -166,55 +165,6 @@ def concatenated_inputs(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tenso
     return output
 
 
-# def compute_token_ranks_efficient(
-#     logprobs: torch.Tensor, 
-#     labels: torch.Tensor, 
-#     loss_mask: torch.Tensor,
-#     chunk_size: int = 1000
-# ) -> torch.Tensor:
-#     """Efficiently compute token ranks with memory optimization.
-    
-#     Args:
-#         logprobs: Token log probabilities [batch_size, seq_len, vocab_size]
-#         labels: True token labels [batch_size, seq_len]  
-#         loss_mask: Boolean mask for valid positions [batch_size, seq_len]
-#         chunk_size: Processing chunk size to avoid OOM
-        
-#     Returns:
-#         Token ranks tensor [batch_size, seq_len]
-#     """
-#     batch_size, seq_len, vocab_size = logprobs.shape
-    
-#     # Get log probabilities for the actual labels
-#     label_logprobs = torch.gather(logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
-    
-#     # Initialize ranks tensor
-#     token_ranks = torch.zeros_like(labels, dtype=torch.long)
-    
-#     # Only compute ranks where loss_mask is True
-#     valid_positions = loss_mask.nonzero(as_tuple=False)
-    
-#     if len(valid_positions) == 0:
-#         return torch.roll(token_ranks, shifts=1, dims=1)
-    
-#     # Process in chunks to avoid memory issues
-#     for chunk_start in range(0, len(valid_positions), chunk_size):
-#         chunk_end = min(chunk_start + chunk_size, len(valid_positions))
-#         chunk_positions = valid_positions[chunk_start:chunk_end]
-        
-#         for pos_idx in range(len(chunk_positions)):
-#             batch_idx, seq_idx = chunk_positions[pos_idx]
-#             label_logprob = label_logprobs[batch_idx, seq_idx]
-            
-#             # Count tokens with higher log probability (rank = number of better tokens + 1)
-#             position_logprobs = logprobs[batch_idx, seq_idx]
-#             rank = (position_logprobs > label_logprob).sum().item() + 1
-#             token_ranks[batch_idx, seq_idx] = rank
-    
-#     # Mask out invalid positions and shift by 1 (standard practice)
-#     token_ranks[~loss_mask] = 0
-#     return torch.roll(token_ranks, shifts=1, dims=1)
-
 
 def concatenated_forward(
     model: nn.Module,
@@ -277,40 +227,36 @@ def concatenated_forward(
     # Mask out invalid label positions
     labels[~loss_mask_shifted] = 0  # dummy token for masked positions
     
-    # Adaptive temperature to mitigate attention sinks
-    # Use vocabulary concentration (log(sum(probs^2))) to detect peaked distributions
-    initial_logprobs = logits.log_softmax(dim=-1)
-    log_concentration = torch.logsumexp(2 * initial_logprobs, dim=-1, keepdim=True)  # log(sum(probs^2))
-    
-    # Normalize concentration: uniform dist has log_concentration = log(1/vocab_size), peaked has log_concentration ≈ 0
-    vocab_size = logits.size(-1)
-    min_log_concentration = torch.log(torch.tensor(1.0 / vocab_size, device=logits.device))
-    normalized_concentration = (log_concentration - min_log_concentration) / (0.0 - min_log_concentration)
-    
-    # Higher temperature for high concentration (peaked distributions)
-    adaptive_temp = 1.0 + 2.0 * torch.clamp(normalized_concentration, 0, 1)  # Range: [1, 3]
-    
-    # Apply adaptive temperature and compute log probabilities
-    logprobs = (logits / adaptive_temp).log_softmax(dim=-1)
+    logprobs = logits.log_softmax(dim=-1)
+
     per_token_logprobs = torch.gather(logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
     per_token_logprobs[~loss_mask_shifted] = 0  # Zero out masked positions
     per_token_logprobs = torch.roll(per_token_logprobs, shifts=1, dims=1)  # Align with original sequence
 
-    # Compute token ranks efficiently
-    # token_ranks = compute_token_ranks_efficient(logprobs, labels, loss_mask_shifted)
-
-    # Calculate vocabulary concentration (WPO paper Eq. 2)
-    # Measures how concentrated the model's distribution is over the vocabulary
-    vocab_concentration = torch.logsumexp(2 * logprobs, dim=-1)  # log(sum(probs^2))
-
     # Split results back into chosen vs rejected
     prompt_length = prompt_input_ids.shape[1]
-    
+
+
+
+    # run again with prompt masked to get unconditional log probabilities
+    uncond_attention_mask = torch.cat((
+        torch.zeros_like(prompt_attention_mask), 
+        completion_attention_mask
+        ), dim=1)
+    with torch.no_grad():
+        outputs_uncond = model(full_input_ids, attention_mask=uncond_attention_mask, use_cache=False)
+    logits_uncond = outputs_uncond.logits
+    uncond_logprobs = logits_uncond.log_softmax(dim=-1)
+    per_token_uncond_logprobs = torch.gather(uncond_logprobs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+    per_token_uncond_logprobs[~loss_mask_shifted] = 0  # Zero out masked positions
+    per_token_uncond_logprobs = torch.roll(per_token_uncond_logprobs, shifts=1, dims=1)  # Align with original sequence
+
+    normalized = per_token_logprobs - per_token_uncond_logprobs
+    # normalized_mean = normalized.sum(dim=1) / normalized.shape[1]
+
+
     output = {
-        # Vocabulary concentration measures  
-        "vocab_concentration_chosen": vocab_concentration[:batch_size][:, prompt_length:],
-        "vocab_concentration_rejected": vocab_concentration[batch_size:][:, prompt_length:],
-        
+
         # Input IDs (for debugging/analysis)
         "chosen_input_ids": full_input_ids[:batch_size][:, prompt_length:],
         "rejected_input_ids": full_input_ids[batch_size:][:, prompt_length:],
@@ -323,14 +269,18 @@ def concatenated_forward(
         # Per-token log probabilities
         "chosen_logps": per_token_logprobs[:batch_size][:, prompt_length:],
         "rejected_logps": per_token_logprobs[batch_size:][:, prompt_length:],
+
+        # Unconditional log probabilities
+        "chosen_uncond_logps": per_token_uncond_logprobs[:batch_size][:, prompt_length:],
+        "rejected_uncond_logps": per_token_uncond_logprobs[batch_size:][:, prompt_length:],
+
+        # Normalized log probabilities
+        "chosen_normalized_logps": normalized[:batch_size][:, prompt_length:],
+        "rejected_normalized_logps": normalized[batch_size:][:, prompt_length:],
         
-        # # Token ranks
-        # "chosen_ranks": token_ranks[:batch_size][:, prompt_length:],
-        # "rejected_ranks": token_ranks[batch_size:][:, prompt_length:],
-        
-        # Summary statistics
-        "mean_chosen_logits": logits[:batch_size][loss_mask_shifted[:batch_size]].mean(),
-        "mean_rejected_logits": logits[batch_size:][loss_mask_shifted[batch_size:]].mean(),
+        # # Summary statistics
+        # "mean_chosen_logits": logits[:batch_size][loss_mask_shifted[:batch_size]].mean(),
+        # "mean_rejected_logits": logits[batch_size:][loss_mask_shifted[batch_size:]].mean(),
         
         # Attention masks for loss computation
         "chosen_mask": loss_mask_shifted[:batch_size][:, prompt_length:],
